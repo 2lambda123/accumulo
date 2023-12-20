@@ -111,6 +111,7 @@ import org.apache.accumulo.shell.commands.FormatterCommand;
 import org.apache.accumulo.shell.commands.GetAuthsCommand;
 import org.apache.accumulo.shell.commands.GetGroupsCommand;
 import org.apache.accumulo.shell.commands.GetSplitsCommand;
+import org.apache.accumulo.shell.commands.GetTabletHostingGoalCommand;
 import org.apache.accumulo.shell.commands.GrantCommand;
 import org.apache.accumulo.shell.commands.GrepCommand;
 import org.apache.accumulo.shell.commands.HelpCommand;
@@ -147,6 +148,7 @@ import org.apache.accumulo.shell.commands.SetAuthsCommand;
 import org.apache.accumulo.shell.commands.SetGroupsCommand;
 import org.apache.accumulo.shell.commands.SetIterCommand;
 import org.apache.accumulo.shell.commands.SetShellIterCommand;
+import org.apache.accumulo.shell.commands.SetTabletHostingGoalCommand;
 import org.apache.accumulo.shell.commands.SleepCommand;
 import org.apache.accumulo.shell.commands.SummariesCommand;
 import org.apache.accumulo.shell.commands.SystemPermissionsCommand;
@@ -414,7 +416,8 @@ public class Shell extends ShellOptions implements KeywordExecutable {
     Command[] tableCommands = {new CloneTableCommand(), new ConfigCommand(),
         new CreateTableCommand(), new DeleteTableCommand(), new DropTableCommand(), new DUCommand(),
         new ExportTableCommand(), new ImportTableCommand(), new OfflineCommand(),
-        new OnlineCommand(), new RenameTableCommand(), new TablesCommand(), new NamespacesCommand(),
+        new SetTabletHostingGoalCommand(), new GetTabletHostingGoalCommand(), new OnlineCommand(),
+        new RenameTableCommand(), new TablesCommand(), new NamespacesCommand(),
         new CreateNamespaceCommand(), new DeleteNamespaceCommand(), new RenameNamespaceCommand(),
         new SummariesCommand()};
     Command[] tableControlCommands = {new AddSplitsCommand(), new CompactCommand(),

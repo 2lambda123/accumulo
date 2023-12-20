@@ -18,6 +18,38 @@
  */
 package org.apache.accumulo.core.metadata;
 
+import java.util.Set;
+
+import org.apache.accumulo.core.metadata.schema.TabletMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public enum TabletState {
-  UNASSIGNED, ASSIGNED, HOSTED, ASSIGNED_TO_DEAD_SERVER, SUSPENDED
+  UNASSIGNED, ASSIGNED, HOSTED, ASSIGNED_TO_DEAD_SERVER, SUSPENDED;
+
+  private static Logger log = LoggerFactory.getLogger(TabletState.class);
+
+  public static TabletState compute(TabletMetadata tm, Set<TServerInstance> liveTServers) {
+    TabletMetadata.Location current = null;
+    TabletMetadata.Location future = null;
+    if (tm.hasCurrent()) {
+      current = tm.getLocation();
+    } else {
+      future = tm.getLocation();
+    }
+    if (future != null) {
+      return liveTServers.contains(future.getServerInstance()) ? TabletState.ASSIGNED
+          : TabletState.ASSIGNED_TO_DEAD_SERVER;
+    } else if (current != null) {
+      if (liveTServers.contains(current.getServerInstance())) {
+        return TabletState.HOSTED;
+      } else {
+        return TabletState.ASSIGNED_TO_DEAD_SERVER;
+      }
+    } else if (tm.getSuspend() != null) {
+      return TabletState.SUSPENDED;
+    } else {
+      return TabletState.UNASSIGNED;
+    }
+  }
 }

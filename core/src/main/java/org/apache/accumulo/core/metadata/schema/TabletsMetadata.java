@@ -22,9 +22,10 @@ import static com.google.common.base.Preconditions.checkState;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.toList;
-import static org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ServerColumnFamily.COMPACT_COLUMN;
 import static org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ServerColumnFamily.DIRECTORY_COLUMN;
 import static org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ServerColumnFamily.FLUSH_COLUMN;
+import static org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ServerColumnFamily.OPID_COLUMN;
+import static org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ServerColumnFamily.SELECTED_COLUMN;
 import static org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ServerColumnFamily.TIME_COLUMN;
 import static org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.TabletColumnFamily.PREV_ROW_COLUMN;
 
@@ -70,10 +71,12 @@ import org.apache.accumulo.core.metadata.schema.Ample.ReadConsistency;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.BulkFileColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ClonedColumnFamily;
+import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.CompactedColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.CurrentLocationColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.DataFileColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ExternalCompactionColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.FutureLocationColumnFamily;
+import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.HostingColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.LastLocationColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.LogColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.MergedColumnFamily;
@@ -172,7 +175,7 @@ public class TabletsMetadata implements Iterable<TabletMetadata>, AutoCloseable 
               try {
                 return TabletMetadata.convertRow(WholeRowIterator
                     .decodeRow(entry.getKey(), entry.getValue()).entrySet().iterator(), fetchedCols,
-                    saveKeyValues);
+                    saveKeyValues, false);
               } catch (IOException e) {
                 throw new UncheckedIOException(e);
               }
@@ -241,7 +244,7 @@ public class TabletsMetadata implements Iterable<TabletMetadata>, AutoCloseable 
             scanner.setRange(r);
             RowIterator rowIter = new RowIterator(scanner);
             Iterator<TabletMetadata> iter = Iterators.transform(rowIter,
-                ri -> TabletMetadata.convertRow(ri, fetchedCols, saveKeyValues));
+                ri -> TabletMetadata.convertRow(ri, fetchedCols, saveKeyValues, false));
             if (extentsPresent) {
               return Iterators.filter(iter,
                   tabletMetadata -> extentsToFetch.contains(tabletMetadata.getExtent()));
@@ -297,9 +300,6 @@ public class TabletsMetadata implements Iterable<TabletMetadata>, AutoCloseable 
           case CLONED:
             families.add(ClonedColumnFamily.NAME);
             break;
-          case COMPACT_ID:
-            qualifiers.add(COMPACT_COLUMN);
-            break;
           case DIR:
             qualifiers.add(DIRECTORY_COLUMN);
             break;
@@ -308,6 +308,12 @@ public class TabletsMetadata implements Iterable<TabletMetadata>, AutoCloseable 
             break;
           case FLUSH_ID:
             qualifiers.add(FLUSH_COLUMN);
+            break;
+          case HOSTING_GOAL:
+            qualifiers.add(HostingColumnFamily.GOAL_COLUMN);
+            break;
+          case HOSTING_REQUESTED:
+            qualifiers.add(HostingColumnFamily.REQUESTED_COLUMN);
             break;
           case LAST:
             families.add(LastLocationColumnFamily.NAME);
@@ -340,9 +346,17 @@ public class TabletsMetadata implements Iterable<TabletMetadata>, AutoCloseable 
           case MERGED:
             families.add(MergedColumnFamily.NAME);
             break;
+          case OPID:
+            qualifiers.add(OPID_COLUMN);
+            break;
+          case SELECTED:
+            qualifiers.add(SELECTED_COLUMN);
+            break;
+          case COMPACTED:
+            families.add(CompactedColumnFamily.NAME);
+            break;
           default:
             throw new IllegalArgumentException("Unknown col type " + colToFetch);
-
         }
       }
 

@@ -23,7 +23,6 @@ import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType
 import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.LOADED;
 import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.PREV_ROW;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,8 +45,8 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 import org.apache.accumulo.core.client.Accumulo;
@@ -57,8 +56,10 @@ import org.apache.accumulo.core.client.AccumuloSecurityException;
 import org.apache.accumulo.core.client.MutationsRejectedException;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.TableNotFoundException;
+import org.apache.accumulo.core.client.admin.CompactionConfig;
 import org.apache.accumulo.core.client.admin.NewTableConfiguration;
 import org.apache.accumulo.core.client.admin.TimeType;
+import org.apache.accumulo.core.clientImpl.ClientContext;
 import org.apache.accumulo.core.conf.AccumuloConfiguration;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
@@ -68,6 +69,7 @@ import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.data.constraints.Constraint;
+import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.file.FileOperations;
 import org.apache.accumulo.core.file.FileSKVWriter;
 import org.apache.accumulo.core.file.rfile.RFile;
@@ -75,6 +77,7 @@ import org.apache.accumulo.core.metadata.MetadataTable;
 import org.apache.accumulo.core.metadata.StoredTabletFile;
 import org.apache.accumulo.core.metadata.UnreferencedTabletFile;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema;
+import org.apache.accumulo.core.metadata.schema.MetadataTime;
 import org.apache.accumulo.core.metadata.schema.TabletMetadata;
 import org.apache.accumulo.core.metadata.schema.TabletsMetadata;
 import org.apache.accumulo.core.security.Authorizations;
@@ -155,6 +158,13 @@ public class BulkNewIT extends SharedMiniClusterBase {
 
   private void testSingleTabletSingleFile(AccumuloClient c, boolean offline, boolean setTime)
       throws Exception {
+    testSingleTabletSingleFile(c, offline, setTime, () -> {
+      return null;
+    });
+  }
+
+  private void testSingleTabletSingleFile(AccumuloClient c, boolean offline, boolean setTime,
+      Callable<Void> preLoadAction) throws Exception {
     addSplits(c, tableName, "0333");
 
     if (offline) {
@@ -165,6 +175,7 @@ public class BulkNewIT extends SharedMiniClusterBase {
 
     String h1 = writeData(dir + "/f1.", aconf, 0, 332);
 
+    preLoadAction.call();
     c.tableOperations().importDirectory(dir).to(tableName).tableTime(setTime).load();
     // running again with ignoreEmptyDir set to true will not throw an exception
     c.tableOperations().importDirectory(dir).to(tableName).tableTime(setTime).ignoreEmptyDir(true)
@@ -207,7 +218,73 @@ public class BulkNewIT extends SharedMiniClusterBase {
       // set logical time type so we can set time on bulk import
       newTableConf.setTimeType(TimeType.LOGICAL);
       client.tableOperations().create(tableName, newTableConf);
-      testSingleTabletSingleFile(client, false, true);
+
+      var ctx = (ClientContext) client;
+
+      var tablet = ctx.getAmple().readTablet(new KeyExtent(ctx.getTableId(tableName), null, null));
+      assertEquals(new MetadataTime(0, TimeType.LOGICAL), tablet.getTime());
+
+      var extent = new KeyExtent(ctx.getTableId(tableName), new Text("0333"), null);
+
+      testSingleTabletSingleFile(client, false, true, () -> {
+        // Want to test with and without a location, assuming the tablet does not have a location
+        // now. Need to validate that assumption.
+        assertNull(ctx.getAmple().readTablet(extent).getLocation());
+        return null;
+      });
+
+      assertEquals(new MetadataTime(1, TimeType.LOGICAL),
+          ctx.getAmple().readTablet(extent).getTime());
+
+      int added = 0;
+      try (var writer = client.createBatchWriter(tableName);
+          var scanner = client.createScanner(tableName)) {
+        for (var entry : scanner) {
+          Mutation m = new Mutation(entry.getKey().getRow());
+          m.at().family(entry.getKey().getColumnFamily())
+              .qualifier(entry.getKey().getColumnFamily())
+              .visibility(entry.getKey().getColumnVisibility())
+              .put(Integer.parseInt(entry.getValue().toString()) * 10 + "");
+          writer.addMutation(m);
+          added++;
+        }
+      }
+
+      // verify data written by batch writer overwrote bulk imported data
+      try (var scanner = client.createScanner(tableName)) {
+        assertEquals(2,
+            scanner.stream().mapToLong(e -> e.getKey().getTimestamp()).min().orElse(-1));
+        assertEquals(2 + added - 1,
+            scanner.stream().mapToLong(e -> e.getKey().getTimestamp()).max().orElse(-1));
+        scanner.forEach((k, v) -> {
+          assertEquals(Integer.parseInt(k.getRow().toString()) * 10,
+              Integer.parseInt(v.toString()));
+        });
+      }
+
+      String dir = getDir("/testSetTime-");
+      writeData(dir + "/f1.", aconf, 0, 332);
+
+      // For this import tablet should be hosted so the bulk import operation will have to
+      // coordinate getting time with the hosted tablet. The time should refect the batch writes
+      // just done.
+      client.tableOperations().importDirectory(dir).to(tableName).tableTime(true).load();
+
+      // verify bulk imported data overwrote batch written data
+      try (var scanner = client.createScanner(tableName)) {
+        assertEquals(2 + added,
+            scanner.stream().mapToLong(e -> e.getKey().getTimestamp()).min().orElse(-1));
+        assertEquals(2 + added,
+            scanner.stream().mapToLong(e -> e.getKey().getTimestamp()).max().orElse(-1));
+        scanner.forEach((k, v) -> {
+          assertEquals(Integer.parseInt(k.getRow().toString()), Integer.parseInt(v.toString()));
+        });
+      }
+
+      client.tableOperations().flush(tableName, null, null, true);
+      assertEquals(new MetadataTime(2 + added, TimeType.LOGICAL),
+          ctx.getAmple().readTablet(extent).getTime());
+
     }
   }
 
@@ -522,35 +599,48 @@ public class BulkNewIT extends SharedMiniClusterBase {
   }
 
   @Test
+  public void testManyFiles() throws Exception {
+    try (AccumuloClient c = Accumulo.newClient().from(getClientProps()).build()) {
+      String dir = getDir("/testBulkFile-");
+      FileSystem fs = getCluster().getFileSystem();
+      fs.mkdirs(new Path(dir));
+
+      addSplits(c, tableName, "5000");
+
+      for (int i = 0; i < 100; i++) {
+        writeData(dir + "/f" + i + ".", aconf, i * 100, (i + 1) * 100 - 1);
+      }
+
+      c.tableOperations().importDirectory(dir).to(tableName).load();
+
+      verifyData(c, tableName, 0, 100 * 100 - 1, false);
+
+      c.tableOperations().compact(tableName, new CompactionConfig().setWait(true));
+
+      verifyData(c, tableName, 0, 100 * 100 - 1, false);
+    }
+  }
+
+  @Test
   public void testExceptionInMetadataUpdate() throws Exception {
     try (AccumuloClient c = Accumulo.newClient().from(getClientProps()).build()) {
 
-      // after setting this up, bulk imports should never succeed on a tablet server
+      // after setting this up, bulk imports should fail
       setupBulkConstraint(getPrincipal(), c);
 
       String dir = getDir("/testExceptionInMetadataUpdate-");
 
-      String h1 = writeData(dir + "/f1.", aconf, 0, 333);
+      writeData(dir + "/f1.", aconf, 0, 333);
 
-      var executor = Executors.newSingleThreadExecutor();
-      // With the constraint configured that makes tservers throw an exception on bulk import, the
-      // bulk import should never succeed. So run the bulk import in another thread.
-      var future = executor.submit(() -> {
-        c.tableOperations().importDirectory(dir).to(tableName).load();
-        return null;
-      });
+      // operation should fail with the constraint on the table
+      assertThrows(AccumuloException.class,
+          () -> c.tableOperations().importDirectory(dir).to(tableName).load());
 
-      Thread.sleep(10000);
-
-      // the bulk import should not be done
-      assertFalse(future.isDone());
-
-      // remove the constraint which should allow the bulk import running in the background thread
-      // to complete
       removeBulkConstraint(getPrincipal(), c);
 
-      // wait for the future to complete and ensure it had no exceptions
-      future.get();
+      // should succeed after removing the constraint
+      String h1 = writeData(dir + "/f1.", aconf, 0, 333);
+      c.tableOperations().importDirectory(dir).to(tableName).load();
 
       // verifty the data was bulk imported
       verifyData(c, tableName, 0, 333, false);

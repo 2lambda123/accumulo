@@ -18,6 +18,7 @@
  */
 package org.apache.accumulo.manager.upgrade;
 
+import static org.apache.accumulo.server.AccumuloDataVersion.METADATA_FILE_JSON_ENCODING;
 import static org.apache.accumulo.server.AccumuloDataVersion.REMOVE_DEPRECATIONS_FOR_VERSION_3;
 import static org.apache.accumulo.server.AccumuloDataVersion.ROOT_TABLET_META_CHANGES;
 
@@ -33,9 +34,9 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.client.AccumuloException;
-import org.apache.accumulo.core.dataImpl.KeyExtent;
-import org.apache.accumulo.core.fate.ReadOnlyTStore;
+import org.apache.accumulo.core.fate.ReadOnlyFateStore;
 import org.apache.accumulo.core.fate.ZooStore;
+import org.apache.accumulo.core.metadata.schema.Ample;
 import org.apache.accumulo.core.util.threads.ThreadPools;
 import org.apache.accumulo.core.volume.Volume;
 import org.apache.accumulo.manager.EventCoordinator;
@@ -60,7 +61,7 @@ public class UpgradeCoordinator {
      */
     INITIAL {
       @Override
-      public boolean isParentLevelUpgraded(KeyExtent extent) {
+      public boolean isParentLevelUpgraded(Ample.DataLevel level) {
         return false;
       }
     },
@@ -69,8 +70,8 @@ public class UpgradeCoordinator {
      */
     UPGRADED_ZOOKEEPER {
       @Override
-      public boolean isParentLevelUpgraded(KeyExtent extent) {
-        return extent.isRootTablet();
+      public boolean isParentLevelUpgraded(Ample.DataLevel level) {
+        return level == Ample.DataLevel.ROOT;
       }
     },
     /**
@@ -78,8 +79,8 @@ public class UpgradeCoordinator {
      */
     UPGRADED_ROOT {
       @Override
-      public boolean isParentLevelUpgraded(KeyExtent extent) {
-        return extent.isMeta();
+      public boolean isParentLevelUpgraded(Ample.DataLevel level) {
+        return level == Ample.DataLevel.METADATA || level == Ample.DataLevel.ROOT;
       }
     },
     /**
@@ -87,7 +88,7 @@ public class UpgradeCoordinator {
      */
     COMPLETE {
       @Override
-      public boolean isParentLevelUpgraded(KeyExtent extent) {
+      public boolean isParentLevelUpgraded(Ample.DataLevel level) {
         return true;
       }
     },
@@ -96,7 +97,7 @@ public class UpgradeCoordinator {
      */
     FAILED {
       @Override
-      public boolean isParentLevelUpgraded(KeyExtent extent) {
+      public boolean isParentLevelUpgraded(Ample.DataLevel level) {
         return false;
       }
     };
@@ -105,7 +106,7 @@ public class UpgradeCoordinator {
      * Determines if the place where this extent stores its metadata was upgraded for a given
      * upgrade status.
      */
-    public abstract boolean isParentLevelUpgraded(KeyExtent extent);
+    public abstract boolean isParentLevelUpgraded(Ample.DataLevel level);
   }
 
   private static final Logger log = LoggerFactory.getLogger(UpgradeCoordinator.class);
@@ -113,9 +114,10 @@ public class UpgradeCoordinator {
   private int currentVersion;
   // map of "current version" -> upgrader to next version.
   // Sorted so upgrades execute in order from the oldest supported data version to current
-  private final Map<Integer,Upgrader> upgraders =
-      Collections.unmodifiableMap(new TreeMap<>(Map.of(ROOT_TABLET_META_CHANGES,
-          new Upgrader10to11(), REMOVE_DEPRECATIONS_FOR_VERSION_3, new Upgrader11to12())));
+  private final Map<Integer,
+      Upgrader> upgraders = Collections.unmodifiableMap(new TreeMap<>(
+          Map.of(ROOT_TABLET_META_CHANGES, new Upgrader10to11(), REMOVE_DEPRECATIONS_FOR_VERSION_3,
+              new Upgrader11to12(), METADATA_FILE_JSON_ENCODING, new Upgrader12to13())));
 
   private volatile UpgradeStatus status;
 
@@ -270,7 +272,7 @@ public class UpgradeCoordinator {
       justification = "Want to immediately stop all manager threads on upgrade error")
   private void abortIfFateTransactions(ServerContext context) {
     try {
-      final ReadOnlyTStore<UpgradeCoordinator> fate = new ZooStore<>(
+      final ReadOnlyFateStore<UpgradeCoordinator> fate = new ZooStore<>(
           context.getZooKeeperRoot() + Constants.ZFATE, context.getZooReaderWriter());
       if (!fate.list().isEmpty()) {
         throw new AccumuloException("Aborting upgrade because there are"

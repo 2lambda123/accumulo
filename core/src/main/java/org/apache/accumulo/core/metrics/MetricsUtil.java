@@ -23,6 +23,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.accumulo.core.classloader.ClassLoaderUtil;
 import org.apache.accumulo.core.conf.AccumuloConfiguration;
@@ -48,21 +50,24 @@ public class MetricsUtil {
 
   private static JvmGcMetrics gc;
   private static List<Tag> commonTags;
+  private static Pattern camelCasePattern = Pattern.compile("[a-z][A-Z][a-z]");
 
   public static void initializeMetrics(final AccumuloConfiguration conf, final String appName,
-      final HostAndPort address, final String instanceName) throws ClassNotFoundException,
-      InstantiationException, IllegalAccessException, IllegalArgumentException,
-      InvocationTargetException, NoSuchMethodException, SecurityException {
-    initializeMetrics(conf.getBoolean(Property.GENERAL_MICROMETER_ENABLED),
-        conf.getBoolean(Property.GENERAL_MICROMETER_JVM_METRICS_ENABLED),
-        conf.get(Property.GENERAL_MICROMETER_FACTORY), appName, address, instanceName);
-  }
-
-  private static void initializeMetrics(boolean enabled, boolean jvmMetricsEnabled,
-      String factoryClass, String appName, HostAndPort address, String instanceName)
+      final HostAndPort address, final String instanceName, final String resourceGroup)
       throws ClassNotFoundException, InstantiationException, IllegalAccessException,
       IllegalArgumentException, InvocationTargetException, NoSuchMethodException,
       SecurityException {
+    initializeMetrics(conf.getBoolean(Property.GENERAL_MICROMETER_ENABLED),
+        conf.getBoolean(Property.GENERAL_MICROMETER_JVM_METRICS_ENABLED),
+        conf.get(Property.GENERAL_MICROMETER_FACTORY), appName, address, instanceName,
+        resourceGroup);
+  }
+
+  private static void initializeMetrics(boolean enabled, boolean jvmMetricsEnabled,
+      String factoryClass, String appName, HostAndPort address, String instanceName,
+      String resourceGroup) throws ClassNotFoundException, InstantiationException,
+      IllegalAccessException, IllegalArgumentException, InvocationTargetException,
+      NoSuchMethodException, SecurityException {
 
     LOG.info("initializing metrics, enabled:{}, class:{}", enabled, factoryClass);
 
@@ -77,7 +82,7 @@ public class MetricsUtil {
       List<Tag> tags = new ArrayList<>();
       tags.add(Tag.of("instance.name", instanceName));
       tags.add(Tag.of("process.name", processName));
-
+      tags.add(Tag.of("resource.group", resourceGroup));
       if (address != null) {
         if (!address.getHost().isEmpty()) {
           tags.add(Tag.of("host", address.getHost()));
@@ -111,7 +116,7 @@ public class MetricsUtil {
   public static void initializeProducers(MetricsProducer... producer) {
     for (MetricsProducer p : producer) {
       p.registerMetrics(Metrics.globalRegistry);
-      LOG.info("Metric producer {} initialize", p.getClass().getSimpleName());
+      LOG.info("Metric producer {} initialized", p.getClass().getSimpleName());
     }
   }
 
@@ -121,6 +126,33 @@ public class MetricsUtil {
 
   public static List<Tag> getCommonTags() {
     return commonTags;
+  }
+
+  /**
+   * Centralize any specific string formatting for metric names and/or tags. Ensure strings match
+   * the micrometer naming convention.
+   */
+  public static String formatString(String name) {
+
+    // Handle spaces
+    name = name.replace(" ", ".");
+    // Handle snake_case notation
+    name = name.replace("_", ".");
+    // Handle Hyphens
+    name = name.replace("-", ".");
+
+    // Handle camelCase notation
+    Matcher matcher = camelCasePattern.matcher(name);
+    StringBuilder output = new StringBuilder(name);
+    int insertCount = 0;
+    while (matcher.find()) {
+      // Pattern matches at a lowercase letter, but the insert is at the second position.
+      output.insert(matcher.start() + 1 + insertCount, ".");
+      // The correct index position will shift as inserts occur.
+      insertCount++;
+    }
+    name = output.toString();
+    return name.toLowerCase();
   }
 
   public static void close() {

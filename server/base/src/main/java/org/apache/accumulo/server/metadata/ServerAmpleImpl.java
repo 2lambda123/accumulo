@@ -25,7 +25,6 @@ import static org.apache.accumulo.server.util.MetadataTableUtil.EMPTY_TEXT;
 import java.net.URI;
 import java.util.Collection;
 import java.util.Iterator;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -35,11 +34,9 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 import org.apache.accumulo.core.client.BatchWriter;
-import org.apache.accumulo.core.client.IsolatedScanner;
 import org.apache.accumulo.core.client.MutationsRejectedException;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.TableNotFoundException;
-import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.TableId;
@@ -55,22 +52,17 @@ import org.apache.accumulo.core.metadata.StoredTabletFile;
 import org.apache.accumulo.core.metadata.ValidationUtil;
 import org.apache.accumulo.core.metadata.schema.Ample;
 import org.apache.accumulo.core.metadata.schema.AmpleImpl;
-import org.apache.accumulo.core.metadata.schema.ExternalCompactionFinalState;
-import org.apache.accumulo.core.metadata.schema.ExternalCompactionId;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.BlipSection;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.DeletesSection;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.DeletesSection.SkewedKeyValue;
-import org.apache.accumulo.core.metadata.schema.MetadataSchema.ExternalCompactionSection;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.ScanServerFileReferenceSection;
-import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.BulkFileColumnFamily;
+import org.apache.accumulo.core.metadata.schema.TabletMutatorBase;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.server.ServerContext;
 import org.apache.hadoop.io.Text;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.google.common.base.Preconditions;
 
 public class ServerAmpleImpl extends AmpleImpl implements Ample {
 
@@ -96,9 +88,21 @@ public class ServerAmpleImpl extends AmpleImpl implements Ample {
     return new TabletsMutatorImpl(context);
   }
 
+  @Override
+  public ConditionalTabletsMutator conditionallyMutateTablets() {
+    return new ConditionalTabletsMutatorImpl(context);
+  }
+
+  @Override
+  public AsyncConditionalTabletsMutator
+      conditionallyMutateTablets(Consumer<ConditionalResult> resultsConsumer) {
+    return new AsyncConditionalTabletsMutatorImpl(context, resultsConsumer);
+  }
+
   private void mutateRootGcCandidates(Consumer<RootGcCandidates> mutator) {
     String zpath = context.getZooKeeperRoot() + ZROOT_TABLET_GC_CANDIDATES;
     try {
+      // TODO calling create seems unnecessary and is possibly racy and inefficient
       context.getZooReaderWriter().mutateOrCreate(zpath, new byte[0], currVal -> {
         String currJson = new String(currVal, UTF_8);
         RootGcCandidates rgcc = new RootGcCandidates(currJson);
@@ -186,32 +190,6 @@ public class ServerAmpleImpl extends AmpleImpl implements Ample {
   }
 
   @Override
-  public void removeBulkLoadEntries(TableId tableId, long tid, Text firstSplit, Text lastSplit) {
-    Preconditions.checkArgument(DataLevel.of(tableId) == DataLevel.USER);
-    try (
-        Scanner mscanner =
-            new IsolatedScanner(context.createScanner(MetadataTable.NAME, Authorizations.EMPTY));
-        BatchWriter bw = context.createBatchWriter(MetadataTable.NAME)) {
-      mscanner.setRange(new KeyExtent(tableId, lastSplit, firstSplit).toMetaRange());
-      mscanner.fetchColumnFamily(BulkFileColumnFamily.NAME);
-
-      for (Map.Entry<Key,Value> entry : mscanner) {
-        log.trace("Looking at entry {} with tid {}", entry, tid);
-        long entryTid = BulkFileColumnFamily.getBulkLoadTid(entry.getValue());
-        if (tid == entryTid) {
-          log.trace("deleting entry {}", entry);
-          Key key = entry.getKey();
-          Mutation m = new Mutation(key.getRow());
-          m.putDelete(key.getColumnFamily(), key.getColumnQualifier());
-          bw.addMutation(m);
-        }
-      }
-    } catch (MutationsRejectedException | TableNotFoundException e) {
-      throw new IllegalStateException(e);
-    }
-  }
-
-  @Override
   public void deleteGcCandidates(DataLevel level, Collection<GcCandidate> candidates,
       GcCandidateType type) {
 
@@ -285,55 +263,6 @@ public class ServerAmpleImpl extends AmpleImpl implements Ample {
   }
 
   @Override
-  public void
-      putExternalCompactionFinalStates(Collection<ExternalCompactionFinalState> finalStates) {
-    try (BatchWriter writer = context.createBatchWriter(DataLevel.USER.metaTable())) {
-      String prefix = ExternalCompactionSection.getRowPrefix();
-      for (ExternalCompactionFinalState finalState : finalStates) {
-        Mutation m = new Mutation(prefix + finalState.getExternalCompactionId().canonical());
-        m.put("", "", finalState.toJson());
-        writer.addMutation(m);
-      }
-    } catch (MutationsRejectedException | TableNotFoundException e) {
-      throw new IllegalStateException(e);
-    }
-  }
-
-  @Override
-  public Stream<ExternalCompactionFinalState> getExternalCompactionFinalStates() {
-    Scanner scanner;
-    try {
-      scanner = context.createScanner(DataLevel.USER.metaTable(), Authorizations.EMPTY);
-    } catch (TableNotFoundException e) {
-      throw new IllegalStateException(e);
-    }
-
-    scanner.setRange(ExternalCompactionSection.getRange());
-    int pLen = ExternalCompactionSection.getRowPrefix().length();
-    return scanner.stream()
-        .map(e -> ExternalCompactionFinalState.fromJson(
-            ExternalCompactionId.of(e.getKey().getRowData().toString().substring(pLen)),
-            e.getValue().toString()));
-  }
-
-  @Override
-  public void
-      deleteExternalCompactionFinalStates(Collection<ExternalCompactionId> statusesToDelete) {
-    try (BatchWriter writer = context.createBatchWriter(DataLevel.USER.metaTable())) {
-      String prefix = ExternalCompactionSection.getRowPrefix();
-      for (ExternalCompactionId ecid : statusesToDelete) {
-        Mutation m = new Mutation(prefix + ecid.canonical());
-        m.putDelete(EMPTY_TEXT, EMPTY_TEXT);
-        writer.addMutation(m);
-      }
-      log.debug("Deleted external compaction final state entries for external compactions: {}",
-          statusesToDelete);
-    } catch (MutationsRejectedException | TableNotFoundException e) {
-      throw new IllegalStateException(e);
-    }
-  }
-
-  @Override
   public void putScanServerFileReferences(Collection<ScanServerRefTabletFile> scanRefs) {
     try (BatchWriter writer = context.createBatchWriter(DataLevel.USER.metaTable())) {
       String prefix = ScanServerFileReferenceSection.getRowPrefix();
@@ -398,6 +327,11 @@ public class ServerAmpleImpl extends AmpleImpl implements Ample {
     } catch (MutationsRejectedException | TableNotFoundException e) {
       throw new IllegalStateException(e);
     }
+  }
+
+  @Override
+  public Refreshes refreshes(DataLevel dataLevel) {
+    return new RefreshesImpl(context, dataLevel);
   }
 
 }

@@ -18,7 +18,7 @@
  */
 package org.apache.accumulo.test.compaction;
 
-import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.QUEUE1;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP1;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.compact;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.createTable;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.getRunningCompactions;
@@ -31,25 +31,29 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.accumulo.compactor.Compactor;
-import org.apache.accumulo.coordinator.CompactionCoordinator;
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.IteratorSetting;
 import org.apache.accumulo.core.compaction.thrift.TCompactionState;
 import org.apache.accumulo.core.iterators.IteratorUtil;
+import org.apache.accumulo.core.util.compaction.ExternalCompactionUtil;
 import org.apache.accumulo.core.util.compaction.RunningCompactionInfo;
 import org.apache.accumulo.core.util.threads.Threads;
 import org.apache.accumulo.harness.AccumuloClusterHarness;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloConfigImpl;
+import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.test.functional.SlowIterator;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.thrift.TException;
+import org.apache.thrift.transport.TTransportException;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.net.HostAndPort;
 
 /**
  * Tests that external compactions report progress from start to finish. To prevent flaky test
@@ -74,6 +78,7 @@ public class ExternalCompactionProgressIT extends AccumuloClusterHarness {
   @Override
   public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration coreSite) {
     ExternalCompactionTestUtils.configureMiniCluster(cfg, coreSite);
+    cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP1, 1);
   }
 
   @Test
@@ -83,9 +88,6 @@ public class ExternalCompactionProgressIT extends AccumuloClusterHarness {
         Accumulo.newClient().from(getCluster().getClientProperties()).build()) {
       createTable(client, table1, "cs1");
       writeData(client, table1, ROWS);
-
-      cluster.getClusterControl().startCompactors(Compactor.class, 1, QUEUE1);
-      cluster.getClusterControl().startCoordinator(CompactionCoordinator.class);
 
       Thread checkerThread = startChecker();
       checkerThread.start();
@@ -128,7 +130,14 @@ public class ExternalCompactionProgressIT extends AccumuloClusterHarness {
    * Check running compaction progress.
    */
   private void checkRunning() throws TException {
-    var ecList = getRunningCompactions(getCluster().getServerContext());
+
+    ServerContext ctx = getCluster().getServerContext();
+    Optional<HostAndPort> coordinatorHost = ExternalCompactionUtil.findCompactionCoordinator(ctx);
+    if (coordinatorHost.isEmpty()) {
+      throw new TTransportException("Unable to get CompactionCoordinator address from ZooKeeper");
+    }
+
+    var ecList = getRunningCompactions(ctx, coordinatorHost);
     var ecMap = ecList.getCompactions();
     if (ecMap != null) {
       ecMap.forEach((ecid, ec) -> {

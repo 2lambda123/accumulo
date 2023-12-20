@@ -50,7 +50,9 @@ class FinishCloneTable extends ManagerRepo {
     if (cloneInfo.keepOffline) {
       environment.getTableManager().transitionTableState(cloneInfo.tableId, TableState.OFFLINE);
     } else {
-      environment.getTableManager().transitionTableState(cloneInfo.tableId, TableState.ONLINE);
+      // transition clone table state to state of original table
+      TableState ts = environment.getTableManager().getTableState(cloneInfo.srcTableId);
+      environment.getTableManager().transitionTableState(cloneInfo.tableId, ts);
     }
 
     Utils.unreserveNamespace(environment, cloneInfo.srcNamespaceId, tid, false);
@@ -60,8 +62,8 @@ class FinishCloneTable extends ManagerRepo {
     Utils.unreserveTable(environment, cloneInfo.srcTableId, tid, false);
     Utils.unreserveTable(environment, cloneInfo.tableId, tid, true);
 
-    environment.getEventCoordinator().event("Cloned table %s from %s", cloneInfo.tableName,
-        cloneInfo.srcTableId);
+    environment.getEventCoordinator().event(cloneInfo.tableId, "Cloned table %s from %s",
+        cloneInfo.tableName, cloneInfo.srcTableId);
 
     LoggerFactory.getLogger(FinishCloneTable.class).debug("Cloned table " + cloneInfo.srcTableId
         + " " + cloneInfo.tableId + " " + cloneInfo.tableName);

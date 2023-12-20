@@ -28,6 +28,7 @@ import java.nio.charset.CharsetDecoder;
 import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.EnumSet;
 import java.util.Map.Entry;
+import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
@@ -152,7 +153,7 @@ public class RootTabletMetadata {
     }
   }
 
-  public Stream<SimpleImmutableEntry<Key,Value>> toKeyValues() {
+  public Stream<SimpleImmutableEntry<Key,Value>> getKeyValues() {
     String row = RootTable.EXTENT.toMetaRow().toString();
     return data.columnValues.entrySet().stream()
         .flatMap(famToQualVal -> famToQualVal.getValue().entrySet().stream()
@@ -161,13 +162,19 @@ public class RootTabletMetadata {
                 new Value(qualVal.getValue()))));
   }
 
+  public SortedMap<Key,Value> toKeyValues() {
+    TreeMap<Key,Value> metamap = new TreeMap<>();
+    getKeyValues().forEach(e -> metamap.put(e.getKey(), e.getValue()));
+    return metamap;
+  }
+
   /**
    * Convert this class to a {@link TabletMetadata}
    */
   public TabletMetadata toTabletMetadata() {
     // use a stream so we don't have to re-sort in a new TreeMap<Key,Value> structure
-    return TabletMetadata.convertRow(toKeyValues().iterator(),
-        EnumSet.allOf(TabletMetadata.ColumnType.class), false);
+    return TabletMetadata.convertRow(getKeyValues().iterator(),
+        EnumSet.allOf(TabletMetadata.ColumnType.class), false, false);
   }
 
   public static boolean needsUpgrade(final String json) {

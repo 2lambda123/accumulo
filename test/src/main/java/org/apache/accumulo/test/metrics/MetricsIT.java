@@ -75,10 +75,10 @@ public class MetricsIT extends ConfigurableMacBase implements MetricsProducer {
 
   @Override
   protected void configure(MiniAccumuloConfigImpl cfg, Configuration hadoopCoreSite) {
-    cfg.setNumTservers(2);
     cfg.setProperty(Property.GC_CYCLE_START, "1s");
     cfg.setProperty(Property.GC_CYCLE_DELAY, "1s");
     cfg.setProperty(Property.MANAGER_FATE_METRICS_MIN_UPDATE_INTERVAL, "1s");
+    cfg.setProperty(Property.GENERAL_MICROMETER_CACHE_METRICS_ENABLED, "true");
 
     // Tell the server processes to use a StatsDMeterRegistry that will be configured
     // to push all metrics to the sink we started.
@@ -96,11 +96,14 @@ public class MetricsIT extends ConfigurableMacBase implements MetricsProducer {
     cluster.stop();
 
     Set<String> unexpectedMetrics = Set.of(METRICS_SCAN_YIELDS, METRICS_UPDATE_ERRORS,
-        METRICS_COMPACTOR_MAJC_STUCK, METRICS_SCAN_BUSY_TIMEOUT, METRICS_SCAN_PAUSED_FOR_MEM,
-        METRICS_SCAN_RETURN_FOR_MEM, METRICS_MINC_PAUSED, METRICS_MAJC_PAUSED);
+        METRICS_SCAN_BUSY_TIMEOUT, METRICS_SCAN_PAUSED_FOR_MEM, METRICS_SCAN_RETURN_FOR_MEM,
+        METRICS_MINC_PAUSED, METRICS_MAJC_PAUSED);
     Set<String> flakyMetrics = Set.of(METRICS_GC_WAL_ERRORS, METRICS_FATE_TYPE_IN_PROGRESS,
         METRICS_PROPSTORE_EVICTION_COUNT, METRICS_PROPSTORE_REFRESH_COUNT,
-        METRICS_PROPSTORE_REFRESH_LOAD_COUNT, METRICS_PROPSTORE_ZK_ERROR_COUNT);
+        METRICS_PROPSTORE_REFRESH_LOAD_COUNT, METRICS_PROPSTORE_ZK_ERROR_COUNT,
+        METRICS_TSERVER_TABLETS_ONLINE_ONDEMAND, METRICS_TSERVER_TABLETS_ONDEMAND_UNLOADED_FOR_MEM,
+        METRICS_COMPACTOR_MAJC_STUCK, METRICS_MANAGER_ROOT_TGW_ERRORS,
+        METRICS_MANAGER_META_TGW_ERRORS, METRICS_MANAGER_USER_TGW_ERRORS);
 
     Map<String,String> expectedMetricNames = this.getMetricFields();
     flakyMetrics.forEach(expectedMetricNames::remove); // might not see these
@@ -160,7 +163,7 @@ public class MetricsIT extends ConfigurableMacBase implements MetricsProducer {
           writer.addMutation(m);
         }
       }
-      client.tableOperations().compact(tableName, new CompactionConfig());
+      client.tableOperations().compact(tableName, new CompactionConfig().setWait(true));
       try (Scanner scanner = client.createScanner(tableName)) {
         scanner.forEach((k, v) -> {});
       }
@@ -193,6 +196,9 @@ public class MetricsIT extends ConfigurableMacBase implements MetricsProducer {
             // check hostname is always set and is valid
             assertNotEquals("0.0.0.0", a.getTags().get("host"));
             assertNotNull(a.getTags().get("instance.name"));
+
+            // check resource.group tag exists
+            assertNotNull(a.getTags().get("resource.group"));
 
             // check the length of the tag value is sane
             final int MAX_EXPECTED_TAG_LEN = 128;

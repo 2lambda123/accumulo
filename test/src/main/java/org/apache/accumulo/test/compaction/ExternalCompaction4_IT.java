@@ -18,7 +18,6 @@
  */
 package org.apache.accumulo.test.compaction;
 
-import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.QUEUE1;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.createTable;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -26,8 +25,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.util.EnumSet;
 import java.util.NoSuchElementException;
 
-import org.apache.accumulo.compactor.Compactor;
-import org.apache.accumulo.coordinator.CompactionCoordinator;
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.IteratorSetting;
@@ -42,7 +39,6 @@ import org.apache.accumulo.core.metadata.schema.TabletMetadata;
 import org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType;
 import org.apache.accumulo.core.metadata.schema.TabletsMetadata;
 import org.apache.accumulo.harness.AccumuloClusterHarness;
-import org.apache.accumulo.minicluster.ServerType;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloConfigImpl;
 import org.apache.accumulo.test.functional.ErrorThrowingIterator;
 import org.apache.accumulo.test.functional.ReadWriteIT;
@@ -54,15 +50,12 @@ public class ExternalCompaction4_IT extends AccumuloClusterHarness {
   @Override
   public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration coreSite) {
     ExternalCompactionTestUtils.configureMiniCluster(cfg, coreSite);
-    cfg.setNumCompactors(2);
   }
 
   @Test
   public void testErrorDuringCompactionNoOutput() throws Exception {
     final String table1 = this.getUniqueNames(1)[0];
     try (AccumuloClient client = Accumulo.newClient().from(getClientProps()).build()) {
-      getCluster().getClusterControl().startCoordinator(CompactionCoordinator.class);
-      getCluster().getClusterControl().startCompactors(Compactor.class, 1, QUEUE1);
       createTable(client, table1, "cs1");
       client.tableOperations().setProperty(table1, Property.TABLE_MAJC_RATIO.getKey(), "51");
       TableId tid = TableId.of(client.tableOperations().tableIdMap().get(table1));
@@ -90,9 +83,6 @@ public class ExternalCompaction4_IT extends AccumuloClusterHarness {
       assertThrows(NoSuchElementException.class, () -> ample.readTablets().forTable(tid)
           .fetch(ColumnType.FILES).build().iterator().next());
       assertEquals(0, client.createScanner(table1).stream().count());
-    } finally {
-      getCluster().getClusterControl().stopAllServers(ServerType.COMPACTOR);
-      getCluster().getClusterControl().stopAllServers(ServerType.COMPACTION_COORDINATOR);
     }
   }
 
@@ -100,13 +90,14 @@ public class ExternalCompaction4_IT extends AccumuloClusterHarness {
   public void testErrorDuringUserCompaction() throws Exception {
     final String table1 = this.getUniqueNames(1)[0];
     try (AccumuloClient client = Accumulo.newClient().from(getClientProps()).build()) {
-      getCluster().getClusterControl().startCoordinator(CompactionCoordinator.class);
-      getCluster().getClusterControl().startCompactors(Compactor.class, 1, QUEUE1);
       createTable(client, table1, "cs1");
       client.tableOperations().setProperty(table1, Property.TABLE_FILE_MAX.getKey(), "1001");
       client.tableOperations().setProperty(table1, Property.TABLE_MAJC_RATIO.getKey(), "1001");
       TableId tid = TableId.of(client.tableOperations().tableIdMap().get(table1));
 
+      // In addition to testing errors in compactions, this test also exercises creating lots of
+      // files to compact. The following will create 1000 files to compact. When changing this test
+      // try to keep both or create a new test for lots of files to compact.
       ReadWriteIT.ingest(client, 1000, 1, 1, 0, "colf", table1, 1);
 
       Ample ample = ((ClientContext) client).getAmple();
@@ -119,15 +110,14 @@ public class ExternalCompaction4_IT extends AccumuloClusterHarness {
       client.tableOperations().attachIterator(table1, setting, EnumSet.of(IteratorScope.majc));
       client.tableOperations().compact(table1, new CompactionConfig().setWait(true));
 
-      tms = ample.readTablets().forTable(tid).fetch(ColumnType.FILES).build();
+      tms = ample.readTablets().forTable(tid).fetch(ColumnType.FILES, ColumnType.ECOMP).build();
       tm = tms.iterator().next();
       assertEquals(1, tm.getFiles().size());
+      // ensure the failed compactions did not leave anything in the metadata table
+      assertEquals(0, tm.getExternalCompactions().size());
 
       ReadWriteIT.verify(client, 1000, 1, 1, 0, table1);
 
-    } finally {
-      getCluster().getClusterControl().stopAllServers(ServerType.COMPACTOR);
-      getCluster().getClusterControl().stopAllServers(ServerType.COMPACTION_COORDINATOR);
     }
 
   }

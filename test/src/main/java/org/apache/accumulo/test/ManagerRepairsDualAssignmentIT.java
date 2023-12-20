@@ -26,16 +26,16 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.admin.NewTableConfiguration;
-import org.apache.accumulo.core.clientImpl.ClientContext;
+import org.apache.accumulo.core.client.admin.TabletHostingGoal;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.metadata.MetadataTable;
 import org.apache.accumulo.core.metadata.RootTable;
-import org.apache.accumulo.core.metadata.TabletLocationState;
 import org.apache.accumulo.core.metadata.schema.Ample.DataLevel;
 import org.apache.accumulo.core.metadata.schema.Ample.TabletMutator;
 import org.apache.accumulo.core.metadata.schema.TabletMetadata;
@@ -43,8 +43,6 @@ import org.apache.accumulo.core.security.TablePermission;
 import org.apache.accumulo.minicluster.ServerType;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloConfigImpl;
 import org.apache.accumulo.server.ServerContext;
-import org.apache.accumulo.server.manager.state.ClosableIterator;
-import org.apache.accumulo.server.manager.state.TabletStateStore;
 import org.apache.accumulo.test.functional.ConfigurableMacBase;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.RawLocalFileSystem;
@@ -70,7 +68,6 @@ public class ManagerRepairsDualAssignmentIT extends ConfigurableMacBase {
   public void test() throws Exception {
     // make some tablets, spread 'em around
     try (AccumuloClient c = Accumulo.newClient().from(getClientProperties()).build()) {
-      ClientContext context = (ClientContext) c;
       ServerContext serverContext = cluster.getServerContext();
       String table = this.getUniqueNames(1)[0];
       c.securityOperations().grantTablePermission("root", MetadataTable.NAME,
@@ -80,22 +77,26 @@ public class ManagerRepairsDualAssignmentIT extends ConfigurableMacBase {
       for (String part : "a b c d e f g h i j k l m n o p q r s t u v w x y z".split(" ")) {
         partitions.add(new Text(part));
       }
-      NewTableConfiguration ntc = new NewTableConfiguration().withSplits(partitions);
+      NewTableConfiguration ntc = new NewTableConfiguration().withSplits(partitions)
+          .withInitialHostingGoal(TabletHostingGoal.ALWAYS);
       c.tableOperations().create(table, ntc);
       // scan the metadata table and get the two table location states
       final Set<TabletMetadata.Location> states = new HashSet<>();
-      final Set<TabletLocationState> oldLocations = new HashSet<>();
-      final TabletStateStore store = TabletStateStore.getStoreForLevel(DataLevel.USER, context);
+      final Set<TabletMetadata> oldLocations = new HashSet<>();
 
       while (states.size() < 2) {
         Thread.sleep(250);
         oldLocations.clear();
-        for (TabletLocationState tls : store) {
-          if (tls.current != null) {
-            states.add(tls.current);
-            oldLocations.add(tls);
-          }
+        try (
+            var tablets = serverContext.getAmple().readTablets().forLevel(DataLevel.USER).build()) {
+          tablets.iterator().forEachRemaining(tm -> {
+            if (tm.hasCurrent()) {
+              states.add(tm.getLocation());
+              oldLocations.add(tm);
+            }
+          });
         }
+
       }
       assertEquals(2, states.size());
       // Kill a tablet server... we don't care which one... wait for everything to be reassigned
@@ -105,47 +106,51 @@ public class ManagerRepairsDualAssignmentIT extends ConfigurableMacBase {
       while (true) {
         Thread.sleep(1000);
         states.clear();
-        boolean allAssigned = true;
-        for (TabletLocationState tls : store) {
-          if (tls != null && tls.current != null) {
-            states.add(tls.current);
-          } else {
-            allAssigned = false;
-          }
+        AtomicBoolean allAssigned = new AtomicBoolean(true);
+        try (
+            var tablets = serverContext.getAmple().readTablets().forLevel(DataLevel.USER).build()) {
+          tablets.iterator().forEachRemaining(tm -> {
+            if (tm.hasCurrent()) {
+              states.add(tm.getLocation());
+            } else {
+              allAssigned.set(false);
+            }
+          });
         }
         System.out.println(states + " size " + states.size() + " allAssigned " + allAssigned);
-        if (states.size() != 2 && allAssigned) {
+        if (states.size() != 2 && allAssigned.get()) {
           break;
         }
       }
       assertEquals(1, states.size());
       // pick an assigned tablet and assign it to the old tablet
-      TabletLocationState moved = null;
-      for (TabletLocationState old : oldLocations) {
-        if (!states.contains(old.current)) {
+      TabletMetadata moved = null;
+      for (TabletMetadata old : oldLocations) {
+        if (!states.contains(old.getLocation())) {
           moved = old;
         }
       }
       assertNotNull(moved);
       // throw a mutation in as if we were the dying tablet
-      TabletMutator tabletMutator = serverContext.getAmple().mutateTablet(moved.extent);
-      tabletMutator.putLocation(moved.current);
+      TabletMutator tabletMutator = serverContext.getAmple().mutateTablet(moved.getExtent());
+      tabletMutator.putLocation(moved.getLocation());
       tabletMutator.mutate();
       // wait for the manager to fix the problem
-      waitForCleanStore(store);
+      waitForCleanStore(serverContext, DataLevel.USER);
       // now jam up the metadata table
       tabletMutator =
           serverContext.getAmple().mutateTablet(new KeyExtent(MetadataTable.ID, null, null));
-      tabletMutator.putLocation(moved.current);
+      tabletMutator.putLocation(moved.getLocation());
       tabletMutator.mutate();
-      waitForCleanStore(TabletStateStore.getStoreForLevel(DataLevel.METADATA, context));
+      waitForCleanStore(serverContext, DataLevel.METADATA);
     }
   }
 
-  private void waitForCleanStore(TabletStateStore store) throws InterruptedException {
+  private void waitForCleanStore(ServerContext serverContext, DataLevel level)
+      throws InterruptedException {
     while (true) {
-      try (ClosableIterator<TabletLocationState> iter = store.iterator()) {
-        iter.forEachRemaining(t -> {});
+      try (var tablets = serverContext.getAmple().readTablets().forLevel(level).build()) {
+        tablets.iterator().forEachRemaining(t -> {});
       } catch (Exception ex) {
         System.out.println(ex.getMessage());
         Thread.sleep(250);

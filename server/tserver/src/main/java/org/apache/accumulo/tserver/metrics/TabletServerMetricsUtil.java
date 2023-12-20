@@ -71,16 +71,6 @@ public class TabletServerMetricsUtil {
     return result;
   }
 
-  public int getMajorCompactions() {
-    var mgr = tserver.getCompactionManager();
-    return mgr == null ? 0 : mgr.getCompactionsRunning();
-  }
-
-  public int getMajorCompactionsQueued() {
-    var mgr = tserver.getCompactionManager();
-    return mgr == null ? 0 : mgr.getCompactionsQueued();
-  }
-
   public int getMinorCompactions() {
     int result = 0;
     for (Tablet tablet : tserver.getOnlineTablets().values()) {
@@ -101,6 +91,20 @@ public class TabletServerMetricsUtil {
     return result;
   }
 
+  public int getOnDemandOnlineCount() {
+    int result = 0;
+    for (Tablet tablet : tserver.getOnlineTablets().values()) {
+      if (tablet.isOnDemand()) {
+        result++;
+      }
+    }
+    return result;
+  }
+
+  public int getOnDemandUnloadedLowMem() {
+    return tserver.getOnDemandOnlineUnloadedForLowMemory();
+  }
+
   public int getOnlineCount() {
     return tserver.getOnlineTablets().size();
   }
@@ -111,10 +115,6 @@ public class TabletServerMetricsUtil {
 
   public int getUnopenedCount() {
     return tserver.getUnopenedCount();
-  }
-
-  public String getName() {
-    return tserver.getClientAddressString();
   }
 
   public long getTotalMinorCompactions() {

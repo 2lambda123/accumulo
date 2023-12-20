@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -51,8 +52,11 @@ import org.apache.accumulo.core.fate.zookeeper.ZooReaderWriter;
 import org.apache.accumulo.core.fate.zookeeper.ZooUtil;
 import org.apache.accumulo.core.lock.ServiceLock;
 import org.apache.accumulo.core.manager.state.tables.TableState;
+import org.apache.accumulo.core.util.compaction.ExternalCompactionUtil;
 import org.apache.accumulo.harness.AccumuloClusterHarness;
+import org.apache.accumulo.miniclusterImpl.MiniAccumuloClusterImpl;
 import org.apache.accumulo.test.util.SlowOps;
+import org.apache.accumulo.test.util.Wait;
 import org.apache.zookeeper.KeeperException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -125,7 +129,6 @@ public class FateConcurrencyIT extends AccumuloClusterHarness {
   @Test
   public void changeTableStateTest() throws Exception {
     String tableName = getUniqueNames(1)[0];
-    SlowOps.setExpectedCompactions(client, 1);
     slowOps = new SlowOps(client, tableName, maxWaitMillis);
 
     assertEquals(TableState.ONLINE, getTableState(tableName), "verify table online after created");
@@ -217,7 +220,6 @@ public class FateConcurrencyIT extends AccumuloClusterHarness {
    */
   @Test
   public void getFateStatus() {
-    SlowOps.setExpectedCompactions(client, 1);
     String tableName = getUniqueNames(1)[0];
     slowOps = new SlowOps(client, tableName, maxWaitMillis);
 
@@ -472,10 +474,14 @@ public class FateConcurrencyIT extends AccumuloClusterHarness {
    * valid.
    */
   @Test
-  public void multipleCompactions() {
+  public void multipleCompactions() throws InterruptedException, IOException {
 
     int tableCount = 4;
-    SlowOps.setExpectedCompactions(client, tableCount);
+
+    // Start 4 Compactors for the user_small group
+    MiniAccumuloClusterImpl mini = (MiniAccumuloClusterImpl) getCluster();
+    mini.getConfig().getClusterServerConfiguration().addCompactorResourceGroup("user_small", 4);
+    mini.start();
 
     List<SlowOps> tables = Arrays.stream(getUniqueNames(tableCount))
         .map(tableName -> new SlowOps(client, tableName, maxWaitMillis))
@@ -484,6 +490,9 @@ public class FateConcurrencyIT extends AccumuloClusterHarness {
 
     assertEquals(tableCount,
         tables.stream().map(SlowOps::getTableName).filter(this::findFate).count());
+
+    Wait.waitFor(() -> tableCount
+        == ExternalCompactionUtil.getCompactionsRunningOnCompactors((ClientContext) client).size());
 
     tables.forEach(t -> {
       try {

@@ -37,6 +37,7 @@ import org.apache.accumulo.core.client.NamespaceNotFoundException;
 import org.apache.accumulo.core.client.TableExistsException;
 import org.apache.accumulo.core.client.TableNotFoundException;
 import org.apache.accumulo.core.client.admin.NewTableConfiguration;
+import org.apache.accumulo.core.client.admin.TabletHostingGoal;
 import org.apache.accumulo.core.client.admin.TimeType;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.constraints.VisibilityConstraint;
@@ -69,6 +70,7 @@ public class CreateTableCommand extends Command {
   private Option createTableOptLocalityProps;
   private Option createTableOptIteratorProps;
   private Option createTableOptOffline;
+  private Option createTableOptInitialHostingGoal;
 
   @Override
   public int execute(final String fullCommand, final CommandLine cl, final Shell shellState)
@@ -113,6 +115,24 @@ public class CreateTableCommand extends Command {
       if (!shellState.getAccumuloClient().tableOperations().exists(oldTable)) {
         throw new TableNotFoundException(null, oldTable, null);
       }
+    }
+
+    // set initial hosting goal, if argument supplied.
+    // CreateTable will default to ONDEMAND if argument not supplied
+    if (cl.hasOption(createTableOptInitialHostingGoal.getOpt())) {
+      String goal = cl.getOptionValue(createTableOptInitialHostingGoal.getOpt()).toUpperCase();
+      TabletHostingGoal initialHostingGoal;
+      switch (goal) {
+        case "ALWAYS":
+          initialHostingGoal = TabletHostingGoal.ALWAYS;
+          break;
+        case "NEVER":
+          initialHostingGoal = TabletHostingGoal.NEVER;
+          break;
+        default:
+          initialHostingGoal = TabletHostingGoal.ONDEMAND;
+      }
+      ntc = ntc.withInitialHostingGoal(initialHostingGoal);
     }
 
     TimeType timeType = TimeType.MILLIS;
@@ -327,11 +347,14 @@ public class CreateTableCommand extends Command {
     createTableOptFormatter = new Option("f", "formatter", true, "default formatter to set");
     createTableOptInitProp =
         new Option("prop", "init-properties", true, "user defined initial properties");
+    createTableOptInitialHostingGoal =
+        new Option("g", "goal", true, "initial hosting goal (defaults to ONDEMAND)");
     createTableOptCopyConfig.setArgName("table");
     createTableOptCopySplits.setArgName("table");
     createTableOptSplit.setArgName("filename");
     createTableOptFormatter.setArgName("className");
     createTableOptInitProp.setArgName("properties");
+    createTableOptInitialHostingGoal.setArgName("goal");
 
     createTableOptLocalityProps =
         new Option("l", "locality", true, "create locality groups at table creation");
@@ -371,6 +394,7 @@ public class CreateTableCommand extends Command {
     o.addOption(createTableOptLocalityProps);
     o.addOption(createTableOptIteratorProps);
     o.addOption(createTableOptOffline);
+    o.addOption(createTableOptInitialHostingGoal);
 
     return o;
   }

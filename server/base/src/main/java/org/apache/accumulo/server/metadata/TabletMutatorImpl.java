@@ -21,14 +21,16 @@ package org.apache.accumulo.server.metadata;
 import org.apache.accumulo.core.client.BatchWriter;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.metadata.schema.Ample;
+import org.apache.accumulo.core.metadata.schema.TabletMutatorBase;
 import org.apache.accumulo.server.ServerContext;
 
-class TabletMutatorImpl extends TabletMutatorBase implements Ample.TabletMutator {
+class TabletMutatorImpl extends TabletMutatorBase<Ample.TabletMutator>
+    implements Ample.TabletMutator {
 
   private BatchWriter writer;
 
   TabletMutatorImpl(ServerContext context, KeyExtent extent, BatchWriter batchWriter) {
-    super(context, extent);
+    super(extent);
     this.writer = batchWriter;
   }
 
@@ -44,5 +46,4 @@ class TabletMutatorImpl extends TabletMutatorBase implements Ample.TabletMutator
       throw new IllegalStateException(e);
     }
   }
-
 }

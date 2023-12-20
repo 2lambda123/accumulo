@@ -53,7 +53,7 @@ public class MemoryStarvedMinCIT extends SharedMiniClusterBase {
 
     @Override
     public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration coreSite) {
-      cfg.setNumTservers(1);
+      cfg.getClusterServerConfiguration().setNumDefaultTabletServers(1);
       cfg.setMemory(ServerType.TABLET_SERVER, 256, MemoryUnit.MEGABYTE);
       // Configure the LowMemoryDetector in the TabletServer
       cfg.setProperty(Property.GENERAL_LOW_MEM_DETECTOR_INTERVAL, "5s");

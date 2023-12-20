@@ -32,10 +32,13 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -45,14 +48,18 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.SortedSet;
 import java.util.regex.Pattern;
 
 import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.AccumuloException;
+import org.apache.accumulo.core.client.BatchScanner;
 import org.apache.accumulo.core.client.IteratorSetting;
+import org.apache.accumulo.core.client.IteratorSetting.Column;
 import org.apache.accumulo.core.client.Scanner;
+import org.apache.accumulo.core.client.admin.TabletHostingGoal;
 import org.apache.accumulo.core.client.sample.RowColumnSampler;
 import org.apache.accumulo.core.client.sample.RowSampler;
 import org.apache.accumulo.core.client.security.tokens.AuthenticationToken;
@@ -66,11 +73,13 @@ import org.apache.accumulo.core.conf.AccumuloConfiguration;
 import org.apache.accumulo.core.conf.DefaultConfiguration;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
+import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.file.FileOperations;
 import org.apache.accumulo.core.file.FileSKVWriter;
 import org.apache.accumulo.core.metadata.MetadataTable;
 import org.apache.accumulo.core.metadata.UnreferencedTabletFile;
+import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.HostingColumnFamily;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.core.security.NamespacePermission;
 import org.apache.accumulo.core.spi.crypto.NoCryptoServiceFactory;
@@ -97,6 +106,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
@@ -113,7 +123,7 @@ public class ShellServerIT extends SharedMiniClusterBase {
     @Override
     public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration coreSite) {
       // Only one tserver to avoid race conditions on ZK propagation (auths and configuration)
-      cfg.setNumTservers(1);
+      cfg.getClusterServerConfiguration().setNumDefaultTabletServers(1);
       // Set the min span to 0 so we will definitely get all the traces back. See ACCUMULO-4365
       Map<String,String> siteConf = cfg.getSiteConfig();
       cfg.setSiteConfig(siteConf);
@@ -1221,6 +1231,147 @@ public class ShellServerIT extends SharedMiniClusterBase {
   }
 
   @Test
+  public void testSetHostingGoalCommand() throws Exception {
+    final String table = getUniqueNames(1)[0];
+    ts.exec("createtable " + table);
+    ts.exec("addsplits -t " + table + " a c e g");
+    String result = ts.exec("sethostinggoal -?");
+    assertTrue(result.contains("Sets the hosting goal"));
+    ts.exec("sethostinggoal -t " + table + " -b a -e a -g never");
+    ts.exec("sethostinggoal -t " + table + " -b c -e e -ee -g always");
+    try (AccumuloClient client = Accumulo.newClient().from(getClientProps()).build();
+        Scanner s = client.createScanner(MetadataTable.NAME, Authorizations.EMPTY)) {
+      String tableId = getTableId(table);
+      s.setRange(new Range(tableId, tableId + "<"));
+      s.fetchColumn(new Column(HostingColumnFamily.GOAL_COLUMN.getColumnFamily(),
+          HostingColumnFamily.GOAL_COLUMN.getColumnQualifier()));
+      for (Entry<Key,Value> e : s) {
+        var row = e.getKey().getRow().toString();
+        if (row.equals(tableId + ";c") || row.equals(tableId + ";e")) {
+          assertEquals(TabletHostingGoal.ALWAYS.name(), e.getValue().toString());
+        } else if (row.equals(tableId + ";a")) {
+          assertEquals(TabletHostingGoal.NEVER.name(), e.getValue().toString());
+        } else if (row.equals(tableId + ";g") || row.equals(tableId + "<")) {
+          assertEquals(TabletHostingGoal.ONDEMAND.name(), e.getValue().toString());
+        } else {
+          fail("Unknown row with hosting goal: " + e.getKey().getRow().toString());
+        }
+      }
+    }
+  }
+
+  @Test
+  public void testGetHostingGoalCommand() throws Exception {
+
+    SortedSet<Text> splits =
+        Sets.newTreeSet(Arrays.asList(new Text("d"), new Text("m"), new Text("s")));
+
+    final String tableName = getUniqueNames(1)[0];
+    java.nio.file.Path splitsFilePath = null;
+
+    try {
+      splitsFilePath = createSplitsFile("splitsFile", splits);
+
+      ts.exec("createtable " + tableName + " -sf " + splitsFilePath.toAbsolutePath(), true);
+      String result = ts.exec("gethostinggoal -?");
+      assertTrue(result.contains("usage: gethostinggoal"));
+
+      String tableId = getTableId(tableName);
+
+      result = ts.exec("gethostinggoal");
+      assertTrue(result.contains("TABLE: " + tableName));
+      assertTrue(result.contains("TABLET ID    HOSTING GOAL"));
+      assertTrue(result.matches("(?s).*" + tableId + ";d<\\s+ONDEMAND.*"));
+      assertTrue(result.matches("(?s).*" + tableId + ";m;d\\s+ONDEMAND.*"));
+      assertTrue(result.matches("(?s).*" + tableId + ";s;m\\s+ONDEMAND.*"));
+      assertTrue(result.matches("(?s).*" + tableId + "<;s\\s+ONDEMAND.*"));
+
+      ts.exec("sethostinggoal -g ALWAYS -r p");
+      result = ts.exec("gethostinggoal -r p");
+      assertFalse(result.matches("(?s).*" + tableId + ";d<\\s+ONDEMAND.*"));
+      assertFalse(result.matches("(?s).*" + tableId + ";m;d\\s+ONDEMAND.*"));
+      assertTrue(result.matches("(?s).*" + tableId + ";s;m\\s+ALWAYS.*"));
+      assertFalse(result.matches("(?s).*" + tableId + "<;s\\s+ONDEMAND.*"));
+
+      result = ts.exec("gethostinggoal");
+      assertTrue(result.matches("(?s).*" + tableId + ";d<\\s+ONDEMAND.*"));
+      assertTrue(result.matches("(?s).*" + tableId + ";m;d\\s+ONDEMAND.*"));
+      assertTrue(result.matches("(?s).*" + tableId + ";s;m\\s+ALWAYS.*"));
+      assertTrue(result.matches("(?s).*" + tableId + "<;s\\s+ONDEMAND.*"));
+
+      result = ts.exec("gethostinggoal -b f -e p");
+      assertFalse(result.matches("(?s).*" + tableId + ";d<\\s+ONDEMAND.*"));
+      assertTrue(result.matches("(?s).*" + tableId + ";m;d\\s+ONDEMAND.*"));
+      assertTrue(result.matches("(?s).*" + tableId + ";s;m\\s+ALWAYS.*"));
+      assertFalse(result.matches("(?s).*" + tableId + "<;s\\s+ONDEMAND.*"));
+
+    } finally {
+      if (splitsFilePath != null) {
+        Files.delete(splitsFilePath);
+      }
+    }
+  }
+
+  // Verify that when splits are added after table creation, hosting goals are set properly
+  @Test
+  public void testGetHostingGoalCommand_DelayedSplits() throws Exception {
+
+    for (int i = 0; i < 40; i++) {
+      ts.exec("createtable tab" + i, true);
+    }
+
+    final String[] tableName = getUniqueNames(2);
+
+    ts.exec("createtable " + tableName[0], true);
+
+    String tableId = getTableId(tableName[0]);
+
+    String result = ts.exec("gethostinggoal");
+
+    assertTrue(result.contains("TABLE: " + tableName[0]));
+    assertTrue(result.contains("TABLET ID    HOSTING GOAL"));
+    assertTrue(result.matches("(?s).*" + tableId + "<<\\s+ONDEMAND.*"));
+
+    // add the splits and check goals again
+    ts.exec("addsplits d m s", true);
+    result = ts.exec("gethostinggoal");
+    assertTrue(result.matches("(?s).*" + tableId + "[;]d<\\s+ONDEMAND.*"));
+    assertTrue(result.matches("(?s).*" + tableId + ";m;d\\s+ONDEMAND.*"));
+    assertTrue(result.matches("(?s).*" + tableId + ";s;m\\s+ONDEMAND.*"));
+    assertTrue(result.matches("(?s).*" + tableId + "<;s\\s+ONDEMAND.*"));
+
+    // scan metadata table to be sure the hosting goals were properly set
+    result = ts.exec("scan -t accumulo.metadata -c hosting:goal -b " + tableId, true);
+    assertTrue(result.contains(tableId + ";d hosting:goal []\tONDEMAND"));
+    assertTrue(result.contains(tableId + ";m hosting:goal []\tONDEMAND"));
+    assertTrue(result.contains(tableId + ";s hosting:goal []\tONDEMAND"));
+    assertTrue(result.contains(tableId + "< hosting:goal []\tONDEMAND"));
+
+    ts.exec("createtable " + tableName[1] + " -g always", true);
+
+    String tableId2 = getTableId(tableName[1]);
+
+    result = ts.exec("gethostinggoal");
+    assertTrue(result.contains("TABLE: " + tableName[1]));
+    assertTrue(result.contains("TABLET ID    HOSTING GOAL"));
+    assertTrue(result.matches("(?s).*" + tableId2 + "<<\\s+ALWAYS.*"));
+
+    ts.exec("addsplits d m s", true);
+    result = ts.exec("gethostinggoal");
+    assertTrue(result.matches("(?s).*" + tableId2 + ";d<\\s+ALWAYS.*"));
+    assertTrue(result.matches("(?s).*" + tableId2 + ";m;d\\s+ALWAYS.*"));
+    assertTrue(result.matches("(?s).*" + tableId2 + ";s;m\\s+ALWAYS.*"));
+    assertTrue(result.matches("(?s).*" + tableId2 + "<;s\\s+ALWAYS.*"));
+
+    // scan metadata table to be sure the hosting goals were properly set
+    result = ts.exec("scan -t accumulo.metadata -c hosting:goal -b " + tableId2, true);
+    assertTrue(result.contains(tableId2 + ";d hosting:goal []\tALWAYS"));
+    assertTrue(result.contains(tableId2 + ";m hosting:goal []\tALWAYS"));
+    assertTrue(result.contains(tableId2 + ";s hosting:goal []\tALWAYS"));
+    assertTrue(result.contains(tableId2 + "< hosting:goal []\tALWAYS"));
+  }
+
+  @Test
   public void grep() throws Exception {
     final String table = getUniqueNames(1)[0];
 
@@ -1695,6 +1846,29 @@ public class ShellServerIT extends SharedMiniClusterBase {
   }
 
   @Test
+  public void scansWithNeverHostedTablets() throws Exception {
+    final String table = getUniqueNames(1)[0];
+    ts.exec("createtable " + table);
+    ts.exec("addsplits -t " + table + " a c e g m t");
+    ts.exec("sethostinggoal -t " + table + " -b a -e a -g never");
+    ts.exec("sethostinggoal -t " + table + " -b c -e e -ee -g always");
+
+    ts.exec("scan -t " + table + " -np -b a -e c", false);
+    ts.exec("scan -t " + table + " -np -b a -e e", false);
+    ts.exec("scan -t " + table + " -np -b d -e d", true);
+    ts.exec("scan -t " + table + " -np -b d -e z", true);
+
+    try (AccumuloClient client = Accumulo.newClient().from(getClientProps()).build();
+        Scanner s = client.createScanner(table, Authorizations.EMPTY);
+        BatchScanner bs = client.createBatchScanner(table);) {
+      assertThrows(RuntimeException.class, () -> Iterables.size(s));
+      bs.setRanges(Collections.singleton(new Range()));
+      assertThrows(RuntimeException.class, () -> Iterables.size(bs));
+    }
+
+  }
+
+  @Test
   public void scansWithColon() throws Exception {
     ts.exec("createtable twithcolontest");
     ts.exec("insert row c:f cq value");
@@ -2093,6 +2267,108 @@ public class ShellServerIT extends SharedMiniClusterBase {
     assertNotContains(output, "c:f3");
     // check that there are two files, with none having extra summary info
     assertMatches(output, "(?sm).*^.*total[:]2[,]\\s+missing[:]0[,]\\s+extra[:]0.*$.*");
+  }
+
+  // This test serves to verify the listtablets command as well as the getTabletInformation api,
+  // which is used by listtablets.
+  @Test
+  public void testListTablets() throws Exception {
+
+    final var tables = getUniqueNames(2);
+    final String table1 = tables[0];
+    final String table2 = tables[1];
+
+    ts.exec("createtable " + table1, true);
+    ts.exec("addsplits g n u", true);
+    ts.exec("sethostinggoal -g always -r g", true);
+    ts.exec("sethostinggoal -g always -r u", true);
+    insertData(table1, 1000, 3);
+    ts.exec("compact -w -t " + table1);
+    ts.exec("scan -t " + table1);
+
+    ts.exec("createtable " + table2, true);
+    ts.exec("addsplits f m t", true);
+    ts.exec("sethostinggoal -g always -r n", true);
+    insertData(table2, 500, 5);
+    ts.exec("compact -t " + table2);
+    ts.exec("scan -t " + table1);
+    ts.exec("sethostinggoal -r g -t " + table2 + " -g NEVER");
+
+    // give tablet time to become unassigned
+    for (var i = 0; i < 15; i++) {
+      Thread.sleep(1000);
+      String goal = ts.exec("listtablets -t " + table2, true, "m                    NEVER");
+      if (goal.contains("UNASSIGNED None")) {
+        break;
+      }
+    }
+
+    var tableId1 = getTableId(table1);
+    var tableId2 = getTableId(table2);
+
+    String results = ts.exec("listtablets -np -p ShellServerIT_testListTablets.", true);
+    assertTrue(results.contains("TABLE: ShellServerIT_testListTablets0"));
+    assertTrue(results.contains("TABLE: ShellServerIT_testListTablets1"));
+    assertTrue(
+        results.contains(tableId1 + "     -INF                 g                    ALWAYS"));
+    assertTrue(
+        results.contains(tableId1 + "     g                    n                    ONDEMAND"));
+    assertTrue(
+        results.contains(tableId1 + "     n                    u                    ALWAYS"));
+    assertTrue(
+        results.contains(tableId1 + "     u                    +INF                 ONDEMAND"));
+    assertTrue(
+        results.contains(tableId2 + "     -INF                 f                    ONDEMAND"));
+    assertTrue(results.contains(tableId2 + "     f                    m                    NEVER"));
+    assertTrue(
+        results.contains(tableId2 + "     m                    t                    ALWAYS"));
+    assertTrue(
+        results.contains(tableId2 + "     t                    +INF                 ONDEMAND"));
+
+    // verify the sum of the tablets sizes, number of entries, and dir name match the data in a
+    // metadata scan
+    String metadata = ts.exec("scan -np -t accumulo.metadata -b " + tableId1 + " -c loc,file");
+    for (String line : metadata.split("\n")) {
+      System.out.println(line);
+      String[] tokens = line.split("\\s+");
+      if (tokens[1].startsWith("loc")) {
+        String loc = tokens[3];
+        assertTrue(results.contains(loc));
+      }
+      if (tokens[1].startsWith("file")) {
+        String[] parts = tokens[1].split("/");
+        String dir = parts[parts.length - 2];
+        assertTrue(results.contains(dir), "Did not see " + dir);
+        String[] sizes = tokens[3].split(",");
+        String size = String.format("%,d", Integer.parseInt(sizes[0]));
+        String entries = String.format("%,d", Integer.parseInt(sizes[1]));
+        assertTrue(results.contains(size));
+        assertTrue(results.contains(entries));
+      }
+    }
+  }
+
+  private void insertData(String table, int numEntries, int rowLen) throws IOException {
+    for (var i = 0; i < numEntries; i++) {
+      String alphabet = "abcdefghijklmnopqrstuvwxyz";
+      String row = String.valueOf(alphabet.charAt(i % 26)) + i;
+      var cf = "cf" + i;
+      var cq = "cq" + i;
+      var data = "asdfqwerty";
+      ts.exec("insert -t " + table + " " + row + " " + cf + " " + cq + " " + data, true);
+    }
+  }
+
+  private java.nio.file.Path createSplitsFile(final String splitsFile, final SortedSet<Text> splits)
+      throws IOException {
+    String fullSplitsFile = System.getProperty("user.dir") + "/target/" + splitsFile;
+    java.nio.file.Path path = Paths.get(fullSplitsFile);
+    try (BufferedWriter writer = Files.newBufferedWriter(path, UTF_8)) {
+      for (Text text : splits) {
+        writer.write(text.toString() + '\n');
+      }
+    }
+    return path;
   }
 
   @Test

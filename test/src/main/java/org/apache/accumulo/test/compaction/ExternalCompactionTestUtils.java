@@ -20,6 +20,8 @@ package org.apache.accumulo.test.compaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,9 +33,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
-import java.util.stream.Stream;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
-import org.apache.accumulo.cluster.AccumuloCluster;
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
@@ -54,8 +56,8 @@ import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.data.Value;
-import org.apache.accumulo.core.metadata.schema.ExternalCompactionFinalState;
 import org.apache.accumulo.core.metadata.schema.ExternalCompactionId;
+import org.apache.accumulo.core.metadata.schema.TabletMetadata;
 import org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType;
 import org.apache.accumulo.core.metadata.schema.TabletsMetadata;
 import org.apache.accumulo.core.rpc.ThriftUtil;
@@ -68,6 +70,7 @@ import org.apache.accumulo.core.util.compaction.ExternalCompactionUtil;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloConfigImpl;
 import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.test.compaction.ExternalCompaction_1_IT.TestFilter;
+import org.apache.accumulo.test.util.Wait;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.io.Text;
@@ -80,23 +83,17 @@ import com.google.common.net.HostAndPort;
 public class ExternalCompactionTestUtils {
 
   public static final int MAX_DATA = 1000;
-  public static final String QUEUE1 = "DCQ1";
-  public static final String QUEUE2 = "DCQ2";
-  public static final String QUEUE3 = "DCQ3";
-  public static final String QUEUE4 = "DCQ4";
-  public static final String QUEUE5 = "DCQ5";
-  public static final String QUEUE6 = "DCQ6";
-  public static final String QUEUE7 = "DCQ7";
-  public static final String QUEUE8 = "DCQ8";
+  public static final String GROUP1 = "DCQ1";
+  public static final String GROUP2 = "DCQ2";
+  public static final String GROUP3 = "DCQ3";
+  public static final String GROUP4 = "DCQ4";
+  public static final String GROUP5 = "DCQ5";
+  public static final String GROUP6 = "DCQ6";
+  public static final String GROUP7 = "DCQ7";
+  public static final String GROUP8 = "DCQ8";
 
   public static String row(int r) {
     return String.format("r:%04d", r);
-  }
-
-  public static Stream<ExternalCompactionFinalState> getFinalStatesForTable(AccumuloCluster cluster,
-      TableId tid) {
-    return cluster.getServerContext().getAmple().getExternalCompactionFinalStates()
-        .filter(state -> state.getExtent().tableId().equals(tid));
   }
 
   public static void compact(final AccumuloClient client, String table1, int modulus,
@@ -197,56 +194,55 @@ public class ExternalCompactionTestUtils {
     clProps.put(ClientProperty.BATCH_WRITER_LATENCY_MAX.getKey(), "2s");
     cfg.setClientProps(clProps);
 
+    // configure the compaction services to use the queues
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs1.planner",
         DefaultCompactionPlanner.class.getName());
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs1.planner.opts.executors",
-        "[{'name':'all', 'type': 'external', 'queue': '" + QUEUE1 + "'}]");
+        "[{'name':'all', 'type': 'external', 'group': '" + GROUP1 + "'}]");
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs2.planner",
         DefaultCompactionPlanner.class.getName());
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs2.planner.opts.executors",
-        "[{'name':'all', 'type': 'external','queue': '" + QUEUE2 + "'}]");
+        "[{'name':'all', 'type': 'external','group': '" + GROUP2 + "'}]");
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs3.planner",
         DefaultCompactionPlanner.class.getName());
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs3.planner.opts.executors",
-        "[{'name':'all', 'type': 'external','queue': '" + QUEUE3 + "'}]");
+        "[{'name':'all', 'type': 'external','group': '" + GROUP3 + "'}]");
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs4.planner",
         DefaultCompactionPlanner.class.getName());
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs4.planner.opts.executors",
-        "[{'name':'all', 'type': 'external','queue': '" + QUEUE4 + "'}]");
+        "[{'name':'all', 'type': 'external','group': '" + GROUP4 + "'}]");
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs5.planner",
         DefaultCompactionPlanner.class.getName());
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs5.planner.opts.executors",
-        "[{'name':'all', 'type': 'external','queue': '" + QUEUE5 + "'}]");
+        "[{'name':'all', 'type': 'external','group': '" + GROUP5 + "'}]");
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs6.planner",
         DefaultCompactionPlanner.class.getName());
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs6.planner.opts.executors",
-        "[{'name':'all', 'type': 'external','queue': '" + QUEUE6 + "'}]");
+        "[{'name':'all', 'type': 'external','group': '" + GROUP6 + "'}]");
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs7.planner",
         DefaultCompactionPlanner.class.getName());
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs7.planner.opts.executors",
-        "[{'name':'all', 'type': 'external','queue': '" + QUEUE7 + "'}]");
+        "[{'name':'all', 'type': 'external','group': '" + GROUP7 + "'}]");
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs8.planner",
         DefaultCompactionPlanner.class.getName());
     cfg.setProperty(Property.COMPACTION_SERVICE_PREFIX.getKey() + "cs8.planner.opts.executors",
-        "[{'name':'all', 'type': 'external','queue': '" + QUEUE8 + "'}]");
+        "[{'name':'all', 'type': 'external','group': '" + GROUP8 + "'}]");
     cfg.setProperty(Property.COMPACTION_COORDINATOR_FINALIZER_COMPLETION_CHECK_INTERVAL, "5s");
     cfg.setProperty(Property.COMPACTION_COORDINATOR_DEAD_COMPACTOR_CHECK_INTERVAL, "5s");
     cfg.setProperty(Property.COMPACTION_COORDINATOR_TSERVER_COMPACTION_CHECK_INTERVAL, "3s");
-    cfg.setProperty(Property.COMPACTION_COORDINATOR_THRIFTCLIENT_PORTSEARCH, "true");
+    cfg.setProperty(Property.COMPACTOR_CANCEL_CHECK_INTERVAL, "5s");
     cfg.setProperty(Property.COMPACTOR_PORTSEARCH, "true");
+    cfg.setProperty(Property.COMPACTOR_MIN_JOB_WAIT_TIME, "100ms");
+    cfg.setProperty(Property.COMPACTOR_MAX_JOB_WAIT_TIME, "1s");
     cfg.setProperty(Property.GENERAL_THREADPOOL_SIZE, "10");
     cfg.setProperty(Property.MANAGER_FATE_THREADPOOL_SIZE, "10");
+    cfg.setProperty(Property.MANAGER_TABLET_GROUP_WATCHER_INTERVAL, "1s");
     // use raw local file system so walogs sync and flush will work
     coreSite.set("fs.file.impl", RawLocalFileSystem.class.getName());
   }
 
-  public static TExternalCompactionList getRunningCompactions(ClientContext context)
-      throws TException {
-    Optional<HostAndPort> coordinatorHost =
-        ExternalCompactionUtil.findCompactionCoordinator(context);
-    if (coordinatorHost.isEmpty()) {
-      throw new TTransportException("Unable to get CompactionCoordinator address from ZooKeeper");
-    }
+  public static TExternalCompactionList getRunningCompactions(ClientContext context,
+      Optional<HostAndPort> coordinatorHost) throws TException {
     CompactionCoordinatorService.Client client =
         ThriftUtil.getClient(ThriftClientTypes.COORDINATOR, coordinatorHost.orElseThrow(), context);
     try {
@@ -258,13 +254,8 @@ public class ExternalCompactionTestUtils {
     }
   }
 
-  private static TExternalCompactionList getCompletedCompactions(ClientContext context)
-      throws Exception {
-    Optional<HostAndPort> coordinatorHost =
-        ExternalCompactionUtil.findCompactionCoordinator(context);
-    if (coordinatorHost.isEmpty()) {
-      throw new TTransportException("Unable to get CompactionCoordinator address from ZooKeeper");
-    }
+  private static TExternalCompactionList getCompletedCompactions(ClientContext context,
+      Optional<HostAndPort> coordinatorHost) throws Exception {
     CompactionCoordinatorService.Client client =
         ThriftUtil.getClient(ThriftClientTypes.COORDINATOR, coordinatorHost.orElseThrow(), context);
     try {
@@ -298,11 +289,39 @@ public class ExternalCompactionTestUtils {
     return ecids;
   }
 
+  public static long countTablets(ServerContext ctx, String tableName,
+      Predicate<TabletMetadata> tabletTest) {
+    var tableId = TableId.of(ctx.tableOperations().tableIdMap().get(tableName));
+    try (var tabletsMetadata = ctx.getAmple().readTablets().forTable(tableId).build()) {
+      return tabletsMetadata.stream().filter(tabletTest).count();
+    }
+  }
+
+  public static void waitForRunningCompactions(ServerContext ctx, TableId tid,
+      Set<ExternalCompactionId> idsToWaitFor) throws Exception {
+
+    Wait.waitFor(() -> {
+      Set<ExternalCompactionId> seen;
+      try (TabletsMetadata tm =
+          ctx.getAmple().readTablets().forTable(tid).fetch(ColumnType.ECOMP).build()) {
+        seen = tm.stream().flatMap(t -> t.getExternalCompactions().keySet().stream())
+            .collect(Collectors.toSet());
+      }
+
+      return Collections.disjoint(seen, idsToWaitFor);
+    });
+  }
+
   public static int confirmCompactionRunning(ServerContext ctx, Set<ExternalCompactionId> ecids)
       throws Exception {
     int matches = 0;
+    Optional<HostAndPort> coordinatorHost = ExternalCompactionUtil.findCompactionCoordinator(ctx);
+    if (coordinatorHost.isEmpty()) {
+      throw new TTransportException("Unable to get CompactionCoordinator address from ZooKeeper");
+    }
     while (matches == 0) {
-      TExternalCompactionList running = ExternalCompactionTestUtils.getRunningCompactions(ctx);
+      TExternalCompactionList running =
+          ExternalCompactionTestUtils.getRunningCompactions(ctx, coordinatorHost);
       if (running.getCompactions() != null) {
         for (ExternalCompactionId ecid : ecids) {
           TExternalCompaction tec = running.getCompactions().get(ecid.canonical());
@@ -321,21 +340,24 @@ public class ExternalCompactionTestUtils {
 
   public static void confirmCompactionCompleted(ServerContext ctx, Set<ExternalCompactionId> ecids,
       TCompactionState expectedState) throws Exception {
+    Optional<HostAndPort> coordinatorHost = ExternalCompactionUtil.findCompactionCoordinator(ctx);
+    if (coordinatorHost.isEmpty()) {
+      throw new TTransportException("Unable to get CompactionCoordinator address from ZooKeeper");
+    }
+
     // The running compaction should be removed
-    TExternalCompactionList running = ExternalCompactionTestUtils.getRunningCompactions(ctx);
-    while (running.getCompactions() != null) {
-      running = ExternalCompactionTestUtils.getRunningCompactions(ctx);
-      if (running.getCompactions() == null) {
-        UtilWaitThread.sleep(250);
-      }
+    TExternalCompactionList running =
+        ExternalCompactionTestUtils.getRunningCompactions(ctx, coordinatorHost);
+    while (running.getCompactions() != null && running.getCompactions().keySet().stream()
+        .anyMatch((e) -> ecids.contains(ExternalCompactionId.of(e)))) {
+      running = ExternalCompactionTestUtils.getRunningCompactions(ctx, coordinatorHost);
     }
     // The compaction should be in the completed list with the expected state
-    TExternalCompactionList completed = ExternalCompactionTestUtils.getCompletedCompactions(ctx);
+    TExternalCompactionList completed =
+        ExternalCompactionTestUtils.getCompletedCompactions(ctx, coordinatorHost);
     while (completed.getCompactions() == null) {
-      completed = ExternalCompactionTestUtils.getCompletedCompactions(ctx);
-      if (completed.getCompactions() == null) {
-        UtilWaitThread.sleep(50);
-      }
+      UtilWaitThread.sleep(50);
+      completed = ExternalCompactionTestUtils.getCompletedCompactions(ctx, coordinatorHost);
     }
     for (ExternalCompactionId e : ecids) {
       TExternalCompaction tec = completed.getCompactions().get(e.canonical());
@@ -343,5 +365,21 @@ public class ExternalCompactionTestUtils {
       assertEquals(expectedState, ExternalCompactionTestUtils.getLastState(tec));
     }
 
+  }
+
+  public static void assertNoCompactionMetadata(ServerContext ctx, String tableName) {
+    var tableId = TableId.of(ctx.tableOperations().tableIdMap().get(tableName));
+    var tabletsMetadata = ctx.getAmple().readTablets().forTable(tableId).build();
+
+    int count = 0;
+
+    for (var tabletMetadata : tabletsMetadata) {
+      assertEquals(Set.of(), tabletMetadata.getCompacted());
+      assertNull(tabletMetadata.getSelectedFiles());
+      assertEquals(Set.of(), tabletMetadata.getExternalCompactions().keySet());
+      count++;
+    }
+
+    assertTrue(count > 0);
   }
 }

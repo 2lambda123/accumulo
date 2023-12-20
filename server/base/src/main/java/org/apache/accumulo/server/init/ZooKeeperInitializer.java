@@ -23,8 +23,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import java.io.IOException;
 
 import org.apache.accumulo.core.Constants;
+import org.apache.accumulo.core.client.admin.TabletHostingGoal;
 import org.apache.accumulo.core.client.admin.TimeType;
 import org.apache.accumulo.core.clientImpl.Namespace;
+import org.apache.accumulo.core.clientImpl.TabletHostingGoalUtil;
 import org.apache.accumulo.core.data.InstanceId;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Value;
@@ -44,6 +46,7 @@ import org.apache.accumulo.server.conf.codec.VersionedPropCodec;
 import org.apache.accumulo.server.conf.codec.VersionedProperties;
 import org.apache.accumulo.server.conf.store.SystemPropKey;
 import org.apache.accumulo.server.log.WalStateManager;
+import org.apache.accumulo.server.metadata.RefreshesImpl;
 import org.apache.accumulo.server.metadata.RootGcCandidates;
 import org.apache.accumulo.server.tables.TableManager;
 import org.apache.zookeeper.KeeperException;
@@ -131,6 +134,8 @@ public class ZooKeeperInitializer {
         ZooUtil.NodeExistsPolicy.FAIL);
     zoo.putPersistentData(zkInstanceRoot + RootTable.ZROOT_TABLET_GC_CANDIDATES,
         new RootGcCandidates().toJson().getBytes(UTF_8), ZooUtil.NodeExistsPolicy.FAIL);
+    zoo.putPersistentData(zkInstanceRoot + RootTable.ZROOT_TABLET_REFRESHES,
+        RefreshesImpl.getInitialJson().getBytes(UTF_8), ZooUtil.NodeExistsPolicy.FAIL);
     zoo.putPersistentData(zkInstanceRoot + Constants.ZMANAGERS, EMPTY_BYTE_ARRAY,
         ZooUtil.NodeExistsPolicy.FAIL);
     zoo.putPersistentData(zkInstanceRoot + Constants.ZMANAGER_LOCK, EMPTY_BYTE_ARRAY,
@@ -155,13 +160,11 @@ public class ZooKeeperInitializer {
         ZooUtil.NodeExistsPolicy.FAIL);
     zoo.putPersistentData(zkInstanceRoot + WalStateManager.ZWALS, EMPTY_BYTE_ARRAY,
         ZooUtil.NodeExistsPolicy.FAIL);
-    zoo.putPersistentData(zkInstanceRoot + Constants.ZCOORDINATOR, EMPTY_BYTE_ARRAY,
-        ZooUtil.NodeExistsPolicy.FAIL);
-    zoo.putPersistentData(zkInstanceRoot + Constants.ZCOORDINATOR_LOCK, EMPTY_BYTE_ARRAY,
-        ZooUtil.NodeExistsPolicy.FAIL);
     zoo.putPersistentData(zkInstanceRoot + Constants.ZCOMPACTORS, EMPTY_BYTE_ARRAY,
         ZooUtil.NodeExistsPolicy.FAIL);
     zoo.putPersistentData(zkInstanceRoot + Constants.ZSSERVERS, EMPTY_BYTE_ARRAY,
+        ZooUtil.NodeExistsPolicy.FAIL);
+    zoo.putPersistentData(zkInstanceRoot + Constants.ZCOMPACTIONS, EMPTY_BYTE_ARRAY,
         ZooUtil.NodeExistsPolicy.FAIL);
   }
 
@@ -180,6 +183,9 @@ public class ZooKeeperInitializer {
 
     MetadataSchema.TabletsSection.ServerColumnFamily.TIME_COLUMN.put(mutation,
         new Value(new MetadataTime(0, TimeType.LOGICAL).encode()));
+
+    MetadataSchema.TabletsSection.HostingColumnFamily.GOAL_COLUMN.put(mutation,
+        TabletHostingGoalUtil.toValue(TabletHostingGoal.ALWAYS));
 
     RootTabletMetadata rootTabletJson = new RootTabletMetadata();
     rootTabletJson.update(mutation);

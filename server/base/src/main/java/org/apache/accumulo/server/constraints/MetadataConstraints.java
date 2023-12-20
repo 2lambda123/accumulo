@@ -26,11 +26,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.accumulo.core.clientImpl.TabletHostingGoalUtil;
 import org.apache.accumulo.core.data.ColumnUpdate;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.data.constraints.Constraint;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
+import org.apache.accumulo.core.fate.FateTxId;
 import org.apache.accumulo.core.fate.zookeeper.ZooCache;
 import org.apache.accumulo.core.fate.zookeeper.ZooUtil;
 import org.apache.accumulo.core.lock.ServiceLock;
@@ -40,10 +42,12 @@ import org.apache.accumulo.core.metadata.schema.DataFileValue;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.BulkFileColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ChoppedColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ClonedColumnFamily;
+import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.CompactedColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.CurrentLocationColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.DataFileColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ExternalCompactionColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.FutureLocationColumnFamily;
+import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.HostingColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.LastLocationColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.LogColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.MergedColumnFamily;
@@ -51,6 +55,8 @@ import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.Sc
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.ServerColumnFamily;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.SuspendLocationColumn;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.TabletColumnFamily;
+import org.apache.accumulo.core.metadata.schema.SelectedFiles;
+import org.apache.accumulo.core.metadata.schema.TabletOperationId;
 import org.apache.accumulo.core.util.ColumnFQ;
 import org.apache.accumulo.core.util.cleaner.CleanerUtil;
 import org.apache.accumulo.server.ServerContext;
@@ -83,7 +89,10 @@ public class MetadataConstraints implements Constraint {
           ServerColumnFamily.TIME_COLUMN,
           ServerColumnFamily.LOCK_COLUMN,
           ServerColumnFamily.FLUSH_COLUMN,
-          ServerColumnFamily.COMPACT_COLUMN);
+          ServerColumnFamily.OPID_COLUMN,
+          HostingColumnFamily.GOAL_COLUMN,
+          HostingColumnFamily.REQUESTED_COLUMN,
+          ServerColumnFamily.SELECTED_COLUMN);
 
   @SuppressWarnings("deprecation")
   private static final Text CHOPPED = ChoppedColumnFamily.NAME;
@@ -98,6 +107,7 @@ public class MetadataConstraints implements Constraint {
           FutureLocationColumnFamily.NAME,
           ClonedColumnFamily.NAME,
           ExternalCompactionColumnFamily.NAME,
+          CompactedColumnFamily.NAME,
           CHOPPED,
           MergedColumnFamily.NAME
       );
@@ -139,7 +149,7 @@ public class MetadataConstraints implements Constraint {
     try {
       StoredTabletFile.validate(metadata);
     } catch (RuntimeException e) {
-      violations = addViolation(violations, 9);
+      violations = addViolation(violations, 12);
     }
     return violations;
   }
@@ -205,6 +215,7 @@ public class MetadataConstraints implements Constraint {
 
     for (ColumnUpdate columnUpdate : colUpdates) {
       Text columnFamily = new Text(columnUpdate.getColumnFamily());
+      Text columnQualifier = new Text(columnUpdate.getColumnQualifier());
 
       if (columnUpdate.isDeleted()) {
         if (!isValidColumn(columnUpdate)) {
@@ -214,7 +225,9 @@ public class MetadataConstraints implements Constraint {
       }
 
       if (columnUpdate.getValue().length == 0 && !(columnFamily.equals(ScanFileColumnFamily.NAME)
-          || columnFamily.equals(LogColumnFamily.NAME))) {
+          || columnFamily.equals(LogColumnFamily.NAME)
+          || HostingColumnFamily.REQUESTED_COLUMN.equals(columnFamily, columnQualifier)
+          || columnFamily.equals(CompactedColumnFamily.NAME))) {
         violations = addViolation(violations, 6);
       }
 
@@ -234,6 +247,28 @@ public class MetadataConstraints implements Constraint {
       } else if (columnFamily.equals(ScanFileColumnFamily.NAME)) {
         violations = validateDataFileMetadata(violations,
             new String(columnUpdate.getColumnQualifier(), UTF_8));
+      } else if (HostingColumnFamily.GOAL_COLUMN.equals(columnFamily, columnQualifier)) {
+        try {
+          TabletHostingGoalUtil.fromValue(new Value(columnUpdate.getValue()));
+        } catch (IllegalArgumentException e) {
+          violations = addViolation(violations, 10);
+        }
+      } else if (ServerColumnFamily.OPID_COLUMN.equals(columnFamily, columnQualifier)) {
+        try {
+          TabletOperationId.validate(new String(columnUpdate.getValue(), UTF_8));
+        } catch (IllegalArgumentException e) {
+          violations = addViolation(violations, 9);
+        }
+      } else if (ServerColumnFamily.SELECTED_COLUMN.equals(columnFamily, columnQualifier)) {
+        try {
+          SelectedFiles.from(new String(columnUpdate.getValue(), UTF_8));
+        } catch (RuntimeException e) {
+          violations = addViolation(violations, 11);
+        }
+      } else if (CompactedColumnFamily.NAME.equals(columnFamily)) {
+        if (!FateTxId.isFormatedTid(columnQualifier.toString())) {
+          violations = addViolation(violations, 13);
+        }
       } else if (columnFamily.equals(BulkFileColumnFamily.NAME)) {
         if (!columnUpdate.isDeleted() && !checkedBulk) {
           /*
@@ -280,13 +315,13 @@ public class MetadataConstraints implements Constraint {
                 // https://github.com/apache/accumulo/issues/3505
                 dataFiles.add(StoredTabletFile.of(new Text(update.getColumnQualifier())));
               } catch (RuntimeException e) {
-                violations = addViolation(violations, 9);
+                violations = addViolation(violations, 12);
               }
             } else if (new Text(update.getColumnFamily()).equals(BulkFileColumnFamily.NAME)) {
               try {
                 loadedFiles.add(StoredTabletFile.of(new Text(update.getColumnQualifier())));
               } catch (RuntimeException e) {
-                violations = addViolation(violations, 9);
+                violations = addViolation(violations, 12);
               }
 
               if (!new String(update.getValue(), UTF_8).equals(tidString)) {
@@ -296,7 +331,14 @@ public class MetadataConstraints implements Constraint {
           }
 
           if (!isSplitMutation && !isLocationMutation) {
-            if (otherTidCount > 0 || !dataFiles.equals(loadedFiles)) {
+            try {
+              // attempt to parse value
+              BulkFileColumnFamily.getBulkLoadTid(new Value(tidString));
+
+              if (otherTidCount > 0 || !dataFiles.equals(loadedFiles)) {
+                violations = addViolation(violations, 8);
+              }
+            } catch (Exception ex) {
               violations = addViolation(violations, 8);
             }
           }
@@ -377,7 +419,15 @@ public class MetadataConstraints implements Constraint {
       case 8:
         return "Bulk load mutation contains either inconsistent files or multiple fateTX ids";
       case 9:
+        return "Malformed operation id";
+      case 10:
+        return "Malformed hosting goal";
+      case 11:
+        return "Malformed file selection value";
+      case 12:
         return "Invalid data file metadata format";
+      case 13:
+        return "Invalid compacted column";
     }
     return null;
   }

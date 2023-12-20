@@ -29,6 +29,7 @@ import java.util.SortedSet;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
@@ -304,8 +305,23 @@ public interface TableOperations {
    * </ul>
    *
    * <p>
-   * If two threads call this method concurrently for the same table and set one or more of the
-   * above then one thread will fail.
+   * Starting with Accumulo, 4.0 concurrent compactions can be initiated on a table with different
+   * configuration. Prior to 4.0, if this were done, then only one compaction would work and the
+   * others would throw an exception. When concurrent compactions with different configuration run,
+   * each tablet will be compacted once for each user initiated compaction in some arbitrary order.
+   * For example consider the following situation.
+   *
+   * <ol>
+   * <li>Table A has three tablets Tab1, Tab2, Tab3</li>
+   * <li>This method is called to initiate a compaction on Tablets Tab1 and Tab2 with iterator
+   * I1</li>
+   * <li>This method is called to initiate a compaction on Tablets Tab2 and Tab3 with iterator
+   * I2</li>
+   * <li>Tablet Tab1 will compact with iterator I1</li>
+   * <li>Two compactions will happen for tablet Tab2. It will either compact with iterator I1 and
+   * then I2 OR it will compact with iterator I2 and then I1.</li>
+   * <li>Tablet Tab3 will compact with iterator I2</li>
+   * </ol>
    *
    * @param tableName the table to compact
    * @param config the configuration to use
@@ -987,6 +1003,32 @@ public interface TableOperations {
    * @since 2.1.0
    */
   default TimeType getTimeType(String tableName) throws TableNotFoundException {
+    throw new UnsupportedOperationException();
+  }
+
+  /**
+   * Sets the hosting goal for a range of Tablets in the specified table, but does not wait for the
+   * tablets to reach this goal state. For the Range parameter, note that the Row portion of the
+   * start and end Keys and the inclusivity parameters are used when determining the range of
+   * affected tablets. The other portions of the start and end Keys are not used.
+   *
+   * @param tableName table name
+   * @param range tablet range
+   * @param goal hosting goal
+   * @since 4.0.0
+   */
+  default void setTabletHostingGoal(String tableName, Range range, TabletHostingGoal goal)
+      throws AccumuloSecurityException, AccumuloException, TableNotFoundException {
+    throw new UnsupportedOperationException();
+  }
+
+  /**
+   * @return a stream of tablet information for tablets that fall in the specified range. The stream
+   *         may be backed by a scanner, so it's best to close the stream.
+   * @since 4.0.0
+   */
+  default Stream<TabletInformation> getTabletInformation(final String tableName, final Range range)
+      throws TableNotFoundException {
     throw new UnsupportedOperationException();
   }
 

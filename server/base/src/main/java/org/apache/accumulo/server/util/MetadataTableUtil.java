@@ -22,6 +22,7 @@ import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterrup
 import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.CLONED;
 import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.DIR;
 import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.FILES;
+import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.HOSTING_GOAL;
 import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.LAST;
 import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.LOCATION;
 import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType.LOGS;
@@ -30,6 +31,7 @@ import static org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -49,6 +51,7 @@ import org.apache.accumulo.core.client.BatchWriterConfig;
 import org.apache.accumulo.core.client.MutationsRejectedException;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.TableNotFoundException;
+import org.apache.accumulo.core.client.admin.TabletHostingGoal;
 import org.apache.accumulo.core.client.admin.TimeType;
 import org.apache.accumulo.core.clientImpl.BatchWriterImpl;
 import org.apache.accumulo.core.clientImpl.ScannerImpl;
@@ -138,22 +141,6 @@ public class MetadataTableUtil {
     log.error("Failed to write metadata updates for extent {} {}", extent, m.prettyPrint(), e);
   }
 
-  public static void updateTabletFlushID(KeyExtent extent, long flushID, ServerContext context,
-      ServiceLock zooLock) {
-    TabletMutator tablet = context.getAmple().mutateTablet(extent);
-    tablet.putFlushId(flushID);
-    tablet.putZooLock(zooLock);
-    tablet.mutate();
-  }
-
-  public static void updateTabletCompactID(KeyExtent extent, long compactID, ServerContext context,
-      ServiceLock zooLock) {
-    TabletMutator tablet = context.getAmple().mutateTablet(extent);
-    tablet.putCompactionId(compactID);
-    tablet.putZooLock(zooLock);
-    tablet.mutate();
-  }
-
   public static Map<StoredTabletFile,DataFileValue> updateTabletDataFile(long tid, KeyExtent extent,
       Map<ReferencedTabletFile,DataFileValue> estSizes, MetadataTime time, ServerContext context,
       ServiceLock zooLock) {
@@ -166,37 +153,21 @@ public class MetadataTableUtil {
       tablet.putBulkFile(tf, tid);
       newFiles.put(tf.insert(), dfv);
     });
-    tablet.putZooLock(zooLock);
+    tablet.putZooLock(context.getZooKeeperRoot(), zooLock);
     tablet.mutate();
     return newFiles;
   }
 
   public static void addTablet(KeyExtent extent, String path, ServerContext context,
-      TimeType timeType, ServiceLock zooLock) {
+      TimeType timeType, ServiceLock zooLock, TabletHostingGoal goal) {
     TabletMutator tablet = context.getAmple().mutateTablet(extent);
     tablet.putPrevEndRow(extent.prevEndRow());
     tablet.putDirName(path);
     tablet.putTime(new MetadataTime(0, timeType));
-    tablet.putZooLock(zooLock);
+    tablet.putZooLock(context.getZooKeeperRoot(), zooLock);
+    tablet.putHostingGoal(goal);
     tablet.mutate();
 
-  }
-
-  public static void updateTabletVolumes(KeyExtent extent, List<LogEntry> logsToRemove,
-      List<LogEntry> logsToAdd, List<StoredTabletFile> filesToRemove,
-      SortedMap<ReferencedTabletFile,DataFileValue> filesToAdd, ServiceLock zooLock,
-      ServerContext context) {
-
-    TabletMutator tabletMutator = context.getAmple().mutateTablet(extent);
-    logsToRemove.forEach(tabletMutator::deleteWal);
-    logsToAdd.forEach(tabletMutator::putWal);
-
-    filesToRemove.forEach(tabletMutator::deleteFile);
-    filesToAdd.forEach(tabletMutator::putFile);
-
-    tabletMutator.putZooLock(zooLock);
-
-    tabletMutator.mutate();
   }
 
   public static void rollBackSplit(Text metadataEntry, Text oldPrevEndRow, ServerContext context,
@@ -252,7 +223,7 @@ public class MetadataTableUtil {
       ServerContext context, ServiceLock zooLock) {
     TabletMutator tablet = context.getAmple().mutateTablet(extent);
     scanFiles.forEach(tablet::deleteScan);
-    tablet.putZooLock(zooLock);
+    tablet.putZooLock(context.getZooKeeperRoot(), zooLock);
     tablet.mutate();
   }
 
@@ -389,10 +360,10 @@ public class MetadataTableUtil {
   }
 
   public static void removeUnusedWALEntries(ServerContext context, KeyExtent extent,
-      final List<LogEntry> entries, ServiceLock zooLock) {
+      final Collection<LogEntry> entries, ServiceLock zooLock) {
     TabletMutator tablet = context.getAmple().mutateTablet(extent);
     entries.forEach(tablet::deleteWal);
-    tablet.putZooLock(zooLock);
+    tablet.putZooLock(context.getZooKeeperRoot(), zooLock);
     tablet.mutate();
   }
 
@@ -422,7 +393,7 @@ public class MetadataTableUtil {
   }
 
   private static Iterable<TabletMetadata> createCloneScanner(String testTableName, TableId tableId,
-      AccumuloClient client) throws TableNotFoundException {
+      AccumuloClient client) {
 
     String tableName;
     Range range;
@@ -439,13 +410,12 @@ public class MetadataTableUtil {
     }
 
     return TabletsMetadata.builder(client).scanTable(tableName).overRange(range).checkConsistency()
-        .saveKeyValues().fetch(FILES, LOCATION, LAST, CLONED, PREV_ROW, TIME).build();
+        .saveKeyValues().fetch(FILES, LOCATION, LAST, CLONED, PREV_ROW, TIME, HOSTING_GOAL).build();
   }
 
   @VisibleForTesting
   public static void initializeClone(String testTableName, TableId srcTableId, TableId tableId,
-      AccumuloClient client, BatchWriter bw)
-      throws TableNotFoundException, MutationsRejectedException {
+      AccumuloClient client, BatchWriter bw) throws MutationsRejectedException {
 
     Iterator<TabletMetadata> ti = createCloneScanner(testTableName, srcTableId, client).iterator();
 
@@ -613,5 +583,4 @@ public class MetadataTableUtil {
       }
     }
   }
-
 }

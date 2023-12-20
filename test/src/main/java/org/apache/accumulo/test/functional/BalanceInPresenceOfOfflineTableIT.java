@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
+import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.AccumuloException;
@@ -67,11 +68,11 @@ public class BalanceInPresenceOfOfflineTableIT extends AccumuloClusterHarness {
   public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration hadoopCoreSite) {
     Map<String,String> siteConfig = cfg.getSiteConfig();
     siteConfig.put(Property.TSERV_MAXMEM.getKey(), "10K");
-    siteConfig.put(Property.TSERV_MAJC_DELAY.getKey(), "50ms");
     cfg.setSiteConfig(siteConfig);
     // ensure we have two tservers
-    if (cfg.getNumTservers() < 2) {
-      cfg.setNumTservers(2);
+    if (cfg.getClusterServerConfiguration().getTabletServerConfiguration()
+        .get(Constants.DEFAULT_RESOURCE_GROUP_NAME) < 2) {
+      cfg.getClusterServerConfiguration().setNumDefaultTabletServers(2);
     }
   }
 

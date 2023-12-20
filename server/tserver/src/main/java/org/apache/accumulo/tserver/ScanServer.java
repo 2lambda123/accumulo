@@ -53,6 +53,7 @@ import org.apache.accumulo.core.clientImpl.thrift.TInfo;
 import org.apache.accumulo.core.clientImpl.thrift.ThriftSecurityException;
 import org.apache.accumulo.core.conf.AccumuloConfiguration;
 import org.apache.accumulo.core.conf.Property;
+import org.apache.accumulo.core.conf.SiteConfiguration;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.dataImpl.thrift.InitialMultiScan;
 import org.apache.accumulo.core.dataImpl.thrift.InitialScan;
@@ -88,6 +89,7 @@ import org.apache.accumulo.core.tabletserver.thrift.NoSuchScanIDException;
 import org.apache.accumulo.core.tabletserver.thrift.NotServingTabletException;
 import org.apache.accumulo.core.util.Halt;
 import org.apache.accumulo.core.util.UtilWaitThread;
+import org.apache.accumulo.core.util.cache.Caches.CacheName;
 import org.apache.accumulo.core.util.threads.ThreadPools;
 import org.apache.accumulo.server.AbstractServer;
 import org.apache.accumulo.server.ServerContext;
@@ -99,7 +101,6 @@ import org.apache.accumulo.server.rpc.ServerAddress;
 import org.apache.accumulo.server.rpc.TServerUtils;
 import org.apache.accumulo.server.rpc.ThriftProcessorTypes;
 import org.apache.accumulo.server.security.SecurityUtil;
-import org.apache.accumulo.server.zookeeper.TransactionWatcher;
 import org.apache.accumulo.tserver.TabletServerResourceManager.TabletResourceManager;
 import org.apache.accumulo.tserver.metrics.TabletServerScanMetrics;
 import org.apache.accumulo.tserver.session.MultiScanSession;
@@ -119,7 +120,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.github.benmanes.caffeine.cache.CacheLoader;
-import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.github.benmanes.caffeine.cache.Scheduler;
 import com.google.common.annotations.VisibleForTesting;
@@ -194,8 +194,6 @@ public class ScanServer extends AbstractServer
 
   private ZooCache managerLockCache;
 
-  private final String groupName;
-
   public ScanServer(ConfigOpts opts, String[] args) {
     super("sserver", opts, args);
 
@@ -234,19 +232,23 @@ public class ScanServer extends AbstractServer
             "Tablet metadata caching less than one minute, may cause excessive scans on metadata table.");
       }
       tabletMetadataCache =
-          Caffeine.newBuilder().expireAfterWrite(cacheExpiration, TimeUnit.MILLISECONDS)
+          context.getCaches().createNewBuilder(CacheName.SCAN_SERVER_TABLET_METADATA, true)
+              .expireAfterWrite(cacheExpiration, TimeUnit.MILLISECONDS)
               .scheduler(Scheduler.systemScheduler()).build(tabletMetadataLoader);
     }
 
     delegate = newThriftScanClientHandler(new WriteTracker());
-
-    this.groupName = getConfiguration().get(Property.SSERV_GROUP_NAME);
 
     ThreadPools.watchCriticalScheduledTask(getContext().getScheduledExecutor()
         .scheduleWithFixedDelay(() -> cleanUpReservedFiles(scanServerReservationExpiration),
             scanServerReservationExpiration, scanServerReservationExpiration,
             TimeUnit.MILLISECONDS));
 
+  }
+
+  @Override
+  protected String getResourceGroupPropertyValue(SiteConfiguration conf) {
+    return conf.get(Property.SSERV_GROUP_NAME);
   }
 
   @VisibleForTesting
@@ -264,8 +266,7 @@ public class ScanServer extends AbstractServer
 
     // This class implements TabletClientService.Iface and then delegates calls. Be sure
     // to set up the ThriftProcessor using this class, not the delegate.
-    ClientServiceHandler clientHandler =
-        new ClientServiceHandler(context, new TransactionWatcher(context));
+    ClientServiceHandler clientHandler = new ClientServiceHandler(context);
     TProcessor processor =
         ThriftProcessorTypes.getScanServerTProcessor(clientHandler, this, getContext());
 
@@ -336,8 +337,8 @@ public class ScanServer extends AbstractServer
         ServiceDescriptors descriptors = new ServiceDescriptors();
         for (ThriftService svc : new ThriftService[] {ThriftService.CLIENT,
             ThriftService.TABLET_SCAN}) {
-          descriptors.addService(
-              new ServiceDescriptor(serverLockUUID, svc, getClientAddressString(), this.groupName));
+          descriptors.addService(new ServiceDescriptor(serverLockUUID, svc,
+              getClientAddressString(), this.getResourceGroup()));
         }
 
         if (scanServerLock.tryLock(lw, new ServiceLockData(descriptors))) {
@@ -370,7 +371,7 @@ public class ScanServer extends AbstractServer
 
     try {
       MetricsUtil.initializeMetrics(getContext().getConfiguration(), this.applicationName,
-          clientAddress, getContext().getInstanceName());
+          clientAddress, getContext().getInstanceName(), this.getResourceGroup());
       scanMetrics = new TabletServerScanMetrics();
       MetricsUtil.initializeProducers(this, scanMetrics);
     } catch (ClassNotFoundException | InstantiationException | IllegalAccessException

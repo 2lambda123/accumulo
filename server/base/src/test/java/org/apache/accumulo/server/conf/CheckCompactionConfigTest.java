@@ -72,7 +72,7 @@ public class CheckCompactionConfigTest extends WithTestNames {
         + "compaction.service.cs2.planner.opts.executors=\\\n"
         + "[{'name':'small','type':'internal','maxSize':'16M','numThreads':7},\\\n"
         + "{'name':'medium','type':'internal','maxSize':'128M','numThreads':5},\\\n"
-        + "{'name':'large','type':'external','queue':'DCQ1'}]").replaceAll("'", "\"");
+        + "{'name':'large','type':'external','group':'DCQ1'}]").replaceAll("'", "\"");
 
     String filePath = writeToFileAndReturnPath(inputString);
 
@@ -92,7 +92,7 @@ public class CheckCompactionConfigTest extends WithTestNames {
         + "compaction.service.cs2.planner.opts.executors=\\\n"
         + "[{'name':'small','type':'internal','maxSize':'16M','numThreads':7},\\\n"
         + "{'name':'medium','type':'internal','maxSize':'128M','numThreads':5},\\\n"
-        + "{'name':'large','type':'external','queue':'DCQ1'}] \n"
+        + "{'name':'large','type':'external','group':'DCQ1'}] \n"
         + "compaction.service.cs3.planner="
         + "org.apache.accumulo.core.spi.compaction.DefaultCompactionPlanner \n"
         + "compaction.service.cs3.planner.opts.queues=\\\n"
@@ -108,7 +108,7 @@ public class CheckCompactionConfigTest extends WithTestNames {
         + "org.apache.accumulo.core.spi.compaction.DefaultCompactionPlanner \n"
         + "compaction.service.cs1.planner.opts.executors=\\\n"
         + "[{'name':'small','type':'internal','maxSize':'16M','numThreads':8},\\\n"
-        + "{'name':'medium','type':'external','maxSize':'128M','numThreads':4},\\\n"
+        + "{'name':'medium','type':'external','maxSize':'128M', 'group':'DCQ1', 'numThreads':4},\\\n"
         + "{'name':'large','type':'internal','numThreads':2}]").replaceAll("'", "\"");
     String expectedErrorMsg = "'numThreads' should not be specified for external compactions";
 
@@ -173,11 +173,11 @@ public class CheckCompactionConfigTest extends WithTestNames {
     String inputString = ("compaction.service.cs1.planner="
         + "org.apache.accumulo.core.spi.compaction.DefaultCompactionPlanner \n"
         + "compaction.service.cs1.planner.opts.executors=\\\n"
-        + "[{'name':'small','type':'external','maxSize':'16M','queue':'failedQueue'}] \n"
+        + "[{'name':'small','type':'external','maxSize':'16M','group':'failedQueue'}] \n"
         + "compaction.service.cs1.planner.opts.queues=[{'name':'failedQueue'}]")
         .replaceAll("'", "\"");
 
-    String expectedErrorMsg = "Duplicate external executor for queue failedQueue";
+    String expectedErrorMsg = "Duplicate external executor for group failedQueue";
 
     final String filePath = writeToFileAndReturnPath(inputString);
 

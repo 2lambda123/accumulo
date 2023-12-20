@@ -40,11 +40,10 @@ import org.apache.accumulo.server.manager.state.Assignment;
 import org.apache.accumulo.server.manager.state.TabletStateStore;
 import org.apache.accumulo.server.problems.ProblemReport;
 import org.apache.accumulo.server.problems.ProblemReports;
-import org.apache.accumulo.server.util.ManagerMetadataUtil;
 import org.apache.accumulo.tserver.TabletServerResourceManager.TabletResourceManager;
 import org.apache.accumulo.tserver.managermessage.TabletStatusMessage;
 import org.apache.accumulo.tserver.tablet.Tablet;
-import org.apache.accumulo.tserver.tablet.TabletData;
+import org.apache.accumulo.tserver.tablet.Tablet.RefreshPurpose;
 import org.apache.hadoop.io.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -112,8 +111,7 @@ class AssignmentHandler implements Runnable {
       canLoad = checkTabletMetadata(extent, server.getTabletSession(), tabletMetadata);
 
       if (canLoad && tabletMetadata.sawOldPrevEndRow()) {
-        KeyExtent fixedExtent =
-            ManagerMetadataUtil.fixSplit(server.getContext(), tabletMetadata, server.getLock());
+        KeyExtent fixedExtent = tabletMetadata.getExtent();
 
         synchronized (server.openingTablets) {
           server.openingTablets.remove(extent);
@@ -161,9 +159,8 @@ class AssignmentHandler implements Runnable {
 
       TabletResourceManager trm = server.resourceManager.createTabletResourceManager(extent,
           server.getTableConfiguration(extent));
-      TabletData data = new TabletData(tabletMetadata);
 
-      tablet = new Tablet(server, extent, trm, data);
+      tablet = new Tablet(server, extent, trm, tabletMetadata);
       // If a minor compaction starts after a tablet opens, this indicates a log recovery
       // occurred. This recovered data must be minor compacted.
       // There are three reasons to wait for this minor compaction to finish before placing the
@@ -181,9 +178,13 @@ class AssignmentHandler implements Runnable {
           && !tablet.minorCompactNow(MinorCompactionReason.RECOVERY)) {
         throw new RuntimeException("Minor compaction after recovery fails for " + extent);
       }
+
       Assignment assignment =
           new Assignment(extent, server.getTabletSession(), tabletMetadata.getLast());
       TabletStateStore.setLocation(server.getContext(), assignment);
+
+      // refresh the tablet metadata after setting the location (See #3358)
+      tablet.refreshMetadata(RefreshPurpose.LOAD);
 
       synchronized (server.openingTablets) {
         synchronized (server.onlineTablets) {
@@ -193,6 +194,7 @@ class AssignmentHandler implements Runnable {
           server.recentlyUnloadedCache.remove(tablet.getExtent());
         }
       }
+
       tablet = null; // release this reference
       successful = true;
     } catch (Exception e) {
@@ -282,6 +284,12 @@ class AssignmentHandler implements Runnable {
     if (!ignoreLocationCheck && (loc == null || loc.getType() != TabletMetadata.LocationType.FUTURE
         || !instance.equals(loc.getServerInstance()))) {
       log.info(METADATA_ISSUE + "Unexpected location {} {}", extent, loc);
+      return false;
+    }
+
+    if (meta.getOperationId() != null && meta.getLocation() == null) {
+      log.info(METADATA_ISSUE + "metadata entry has a FATE operation id {} {} {}", extent, loc,
+          meta.getOperationId());
       return false;
     }
 

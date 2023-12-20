@@ -37,6 +37,7 @@ import java.util.UUID;
 
 import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.client.Scanner;
+import org.apache.accumulo.core.client.admin.TabletHostingGoal;
 import org.apache.accumulo.core.client.admin.TimeType;
 import org.apache.accumulo.core.clientImpl.ScannerImpl;
 import org.apache.accumulo.core.conf.SiteConfiguration;
@@ -74,14 +75,17 @@ import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.server.manager.state.Assignment;
 import org.apache.accumulo.server.util.ManagerMetadataUtil;
 import org.apache.accumulo.server.util.MetadataTableUtil;
-import org.apache.accumulo.server.zookeeper.TransactionWatcher;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
+@Disabled // ELASTICITY_TODO
 public class SplitRecoveryIT extends ConfigurableMacBase {
+
+  // ELASTICITY_TODO: This functionality needs to be adpated to work on upgrade
 
   @Override
   protected Duration defaultTimeout() {
@@ -115,7 +119,7 @@ public class SplitRecoveryIT extends ConfigurableMacBase {
         System.exit(-1);
       }
     }, new ServiceLockData(UUID.randomUUID(), "foo", ThriftService.TSERV,
-        ServiceLockData.ServiceDescriptor.DEFAULT_GROUP_NAME));
+        Constants.DEFAULT_RESOURCE_GROUP_NAME));
 
     if (!gotLock) {
       System.err.println("Failed to get lock " + zPath);
@@ -163,13 +167,13 @@ public class SplitRecoveryIT extends ConfigurableMacBase {
       String dirName = "dir_" + i;
       String tdir =
           context.getTablesDirs().iterator().next() + "/" + extent.tableId() + "/" + dirName;
-      MetadataTableUtil.addTablet(extent, dirName, context, TimeType.LOGICAL, zl);
+      MetadataTableUtil.addTablet(extent, dirName, context, TimeType.LOGICAL, zl,
+          TabletHostingGoal.ONDEMAND);
       SortedMap<ReferencedTabletFile,DataFileValue> dataFiles = new TreeMap<>();
       dataFiles.put(new ReferencedTabletFile(new Path(tdir + "/" + RFile.EXTENSION + "_000_000")),
           new DataFileValue(1000017 + i, 10000 + i));
 
       int tid = 0;
-      TransactionWatcher.ZooArbitrator.start(context, Constants.BULK_ARBITRATOR_TYPE, tid);
       SortedMap<StoredTabletFile,DataFileValue> storedFiles =
           new TreeMap<>(MetadataTableUtil.updateTabletDataFile(tid, extent, dataFiles,
               new MetadataTime(0, TimeType.LOGICAL), context, zl));
@@ -220,7 +224,7 @@ public class SplitRecoveryIT extends ConfigurableMacBase {
       Map<Long,List<ReferencedTabletFile>> bulkFiles = getBulkFilesLoaded(context, high);
 
       ManagerMetadataUtil.addNewTablet(context, low, "lowDir", instance, lowDatafileSizes,
-          bulkFiles, new MetadataTime(0, TimeType.LOGICAL), -1L, -1L, zl);
+          bulkFiles, new MetadataTime(0, TimeType.LOGICAL), -1L, zl);
     }
     if (steps >= 2) {
       MetadataTableUtil.finishSplit(high, highDatafileSizes, highDatafilesToRemove, context, zl);

@@ -28,7 +28,7 @@
   </parent>
   <groupId>org.apache.accumulo</groupId>
   <artifactId>accumulo-project</artifactId>
-  <version>3.1.0-SNAPSHOT</version>
+  <version>4.0.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Apache Accumulo Project</name>
   <description>Apache Accumulo is a sorted, distributed key/value store based
@@ -86,7 +86,6 @@
     <module>minicluster</module>
     <module>server/base</module>
     <module>server/compactor</module>
-    <module>server/compaction-coordinator</module>
     <module>server/gc</module>
     <module>server/manager</module>
     <module>server/monitor</module>
@@ -320,11 +319,6 @@
         <groupId>commons-logging</groupId>
         <artifactId>commons-logging</artifactId>
         <version>1.2</version>
-      </dependency>
-      <dependency>
-        <groupId>org.apache.accumulo</groupId>
-        <artifactId>accumulo-compaction-coordinator</artifactId>
-        <version>${project.version}</version>
       </dependency>
       <dependency>
         <groupId>org.apache.accumulo</groupId>
@@ -619,6 +613,11 @@
             <artifactId>HdrHistogram</artifactId>
           </exclusion>
         </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.opentest4j</groupId>
+        <artifactId>opentest4j</artifactId>
+        <version>1.2.0</version>
       </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>
@@ -1664,9 +1663,9 @@
       </build>
     </profile>
     <profile>
-      <id>jdk16</id>
+      <id>jdk17</id>
       <activation>
-        <jdk>[16,)</jdk>
+        <jdk>[17,)</jdk>
       </activation>
       <properties>
         <extraTestArgs>--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.management/java.lang.management=ALL-UNNAMED --add-opens java.management/sun.management=ALL-UNNAMED --add-opens java.base/java.security=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens java.base/java.time=ALL-UNNAMED</extraTestArgs>

@@ -35,44 +35,29 @@ import org.apache.accumulo.core.util.compaction.CompactionExecutorIdImpl;
 public class ExternalCompactionMetadata {
 
   private final Set<StoredTabletFile> jobFiles;
-  private final Set<StoredTabletFile> nextFiles;
   private final ReferencedTabletFile compactTmpName;
   private final String compactorId;
   private final CompactionKind kind;
   private final short priority;
   private final CompactionExecutorId ceid;
   private final boolean propagateDeletes;
-  private final boolean initiallySelectedAll;
-  private final Long compactionId;
+  private final Long fateTxId;
 
-  public ExternalCompactionMetadata(Set<StoredTabletFile> jobFiles, Set<StoredTabletFile> nextFiles,
+  public ExternalCompactionMetadata(Set<StoredTabletFile> jobFiles,
       ReferencedTabletFile compactTmpName, String compactorId, CompactionKind kind, short priority,
-      CompactionExecutorId ceid, boolean propagateDeletes, boolean initiallySelectedAll,
-      Long compactionId) {
-    if (!initiallySelectedAll && !propagateDeletes
-        && (kind == CompactionKind.SELECTOR || kind == CompactionKind.USER)) {
-      throw new IllegalArgumentException(
-          "When user or selector compactions do not propagate deletes, it's expected that all "
-              + "files were selected initially.");
-    }
+      CompactionExecutorId ceid, boolean propagateDeletes, Long fateTxId) {
     this.jobFiles = Objects.requireNonNull(jobFiles);
-    this.nextFiles = Objects.requireNonNull(nextFiles);
     this.compactTmpName = Objects.requireNonNull(compactTmpName);
     this.compactorId = Objects.requireNonNull(compactorId);
     this.kind = Objects.requireNonNull(kind);
     this.priority = priority;
     this.ceid = Objects.requireNonNull(ceid);
     this.propagateDeletes = propagateDeletes;
-    this.initiallySelectedAll = initiallySelectedAll;
-    this.compactionId = compactionId;
+    this.fateTxId = fateTxId;
   }
 
   public Set<StoredTabletFile> getJobFiles() {
     return jobFiles;
-  }
-
-  public Set<StoredTabletFile> getNextFiles() {
-    return nextFiles;
   }
 
   public ReferencedTabletFile getCompactTmpName() {
@@ -99,42 +84,34 @@ public class ExternalCompactionMetadata {
     return propagateDeletes;
   }
 
-  public boolean getInitiallySelecteAll() {
-    return initiallySelectedAll;
-  }
-
-  public Long getCompactionId() {
-    return compactionId;
+  public Long getFateTxId() {
+    return fateTxId;
   }
 
   // This class is used to serialize and deserialize this class using GSon. Any changes to this
   // class must consider persisted data.
   private static class GSonData {
     List<String> inputs;
-    List<String> nextFiles;
     String tmp;
     String compactor;
     String kind;
     String executorId;
     short priority;
     boolean propDels;
-    boolean selectedAll;
-    Long compactionId;
+    Long fateTxId;
   }
 
   public String toJson() {
     GSonData jData = new GSonData();
 
     jData.inputs = jobFiles.stream().map(StoredTabletFile::getMetadata).collect(toList());
-    jData.nextFiles = nextFiles.stream().map(StoredTabletFile::getMetadata).collect(toList());
     jData.tmp = compactTmpName.insert().getMetadata();
     jData.compactor = compactorId;
     jData.kind = kind.name();
     jData.executorId = ((CompactionExecutorIdImpl) ceid).getExternalName();
     jData.priority = priority;
     jData.propDels = propagateDeletes;
-    jData.selectedAll = initiallySelectedAll;
-    jData.compactionId = compactionId;
+    jData.fateTxId = fateTxId;
     return GSON.get().toJson(jData);
   }
 
@@ -143,11 +120,9 @@ public class ExternalCompactionMetadata {
 
     return new ExternalCompactionMetadata(
         jData.inputs.stream().map(StoredTabletFile::new).collect(toSet()),
-        jData.nextFiles.stream().map(StoredTabletFile::new).collect(toSet()),
         StoredTabletFile.of(jData.tmp).getTabletFile(), jData.compactor,
         CompactionKind.valueOf(jData.kind), jData.priority,
-        CompactionExecutorIdImpl.externalId(jData.executorId), jData.propDels, jData.selectedAll,
-        jData.compactionId);
+        CompactionExecutorIdImpl.externalId(jData.executorId), jData.propDels, jData.fateTxId);
   }
 
   @Override

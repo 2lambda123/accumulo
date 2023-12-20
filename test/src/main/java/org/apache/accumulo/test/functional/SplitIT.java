@@ -20,26 +20,38 @@ package org.apache.accumulo.test.functional;
 
 import static java.util.Collections.singletonMap;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.apache.accumulo.core.util.LazySingletons.RANDOM;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Random;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
+import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.admin.CompactionConfig;
 import org.apache.accumulo.core.client.admin.InstanceOperations;
 import org.apache.accumulo.core.client.admin.NewTableConfiguration;
 import org.apache.accumulo.core.client.rfile.RFile;
 import org.apache.accumulo.core.client.rfile.RFileWriter;
-import org.apache.accumulo.core.conf.ConfigurationTypeHelper;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.TableId;
@@ -48,6 +60,7 @@ import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.metadata.MetadataTable;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection.TabletColumnFamily;
 import org.apache.accumulo.core.security.Authorizations;
+import org.apache.accumulo.core.util.Pair;
 import org.apache.accumulo.harness.AccumuloClusterHarness;
 import org.apache.accumulo.minicluster.ServerType;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloConfigImpl;
@@ -57,11 +70,14 @@ import org.apache.accumulo.test.VerifyIngest;
 import org.apache.accumulo.test.VerifyIngest.VerifyParams;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Preconditions;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
@@ -76,7 +92,6 @@ public class SplitIT extends AccumuloClusterHarness {
   @Override
   public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration hadoopCoreSite) {
     cfg.setProperty(Property.TSERV_MAXMEM, "5K");
-    cfg.setProperty(Property.TSERV_MAJC_DELAY, "100ms");
   }
 
   private String tservMaxMem, tservMajcDelay;
@@ -88,11 +103,6 @@ public class SplitIT extends AccumuloClusterHarness {
       InstanceOperations iops = client.instanceOperations();
       Map<String,String> config = iops.getSystemConfiguration();
       tservMaxMem = config.get(Property.TSERV_MAXMEM.getKey());
-      tservMajcDelay = config.get(Property.TSERV_MAJC_DELAY.getKey());
-
-      if (!tservMajcDelay.equals("100ms")) {
-        iops.setProperty(Property.TSERV_MAJC_DELAY.getKey(), "100ms");
-      }
 
       // Property.TSERV_MAXMEM can't be altered on a running server
       boolean restarted = false;
@@ -101,14 +111,6 @@ public class SplitIT extends AccumuloClusterHarness {
         getCluster().getClusterControl().stopAllServers(ServerType.TABLET_SERVER);
         getCluster().getClusterControl().startAllServers(ServerType.TABLET_SERVER);
         restarted = true;
-      }
-
-      // If we restarted the tservers, we don't need to re-wait for the majc delay
-      if (!restarted) {
-        long millis = ConfigurationTypeHelper.getTimeInMillis(tservMajcDelay);
-        log.info("Waiting for majc delay period: {}ms", millis);
-        Thread.sleep(millis);
-        log.info("Finished waiting for majc delay period");
       }
     }
   }
@@ -122,11 +124,6 @@ public class SplitIT extends AccumuloClusterHarness {
         tservMaxMem = null;
         getCluster().getClusterControl().stopAllServers(ServerType.TABLET_SERVER);
         getCluster().getClusterControl().startAllServers(ServerType.TABLET_SERVER);
-      }
-      if (tservMajcDelay != null) {
-        log.info("Resetting {}={}", Property.TSERV_MAJC_DELAY.getKey(), tservMajcDelay);
-        client.instanceOperations().setProperty(Property.TSERV_MAJC_DELAY.getKey(), tservMajcDelay);
-        tservMajcDelay = null;
       }
     }
   }
@@ -163,7 +160,7 @@ public class SplitIT extends AccumuloClusterHarness {
         }
 
         assertTrue(shortened > 0, "Shortened should be greater than zero: " + shortened);
-        assertTrue(count > 10, "Count should be cgreater than 10: " + count);
+        assertTrue(count > 10, "Count should be greater than 10: " + count);
       }
 
       assertEquals(0, getCluster().getClusterControl().exec(CheckForMetadataProblems.class,
@@ -199,8 +196,9 @@ public class SplitIT extends AccumuloClusterHarness {
   public void deleteSplit() throws Exception {
     try (AccumuloClient c = Accumulo.newClient().from(getClientProps()).build()) {
       String tableName = getUniqueNames(1)[0];
-      c.tableOperations().create(tableName, new NewTableConfiguration()
-          .setProperties(singletonMap(Property.TABLE_SPLIT_THRESHOLD.getKey(), "10K")));
+      c.tableOperations().create(tableName,
+          new NewTableConfiguration().setProperties(Map.of(Property.TABLE_SPLIT_THRESHOLD.getKey(),
+              "10K", Property.TABLE_FILE_COMPRESSED_BLOCK_SIZE.getKey(), "1K")));
       DeleteIT.deleteTest(c, getCluster(), tableName);
       c.tableOperations().flush(tableName, null, null, true);
       for (int i = 0; i < 5; i++) {
@@ -211,6 +209,119 @@ public class SplitIT extends AccumuloClusterHarness {
       }
       assertTrue(c.tableOperations().listSplits(tableName).size() > 20);
     }
+  }
+
+  @Test
+  public void testLargeSplit() throws Exception {
+    try (AccumuloClient c = Accumulo.newClient().from(getClientProps()).build()) {
+      String tableName = getUniqueNames(1)[0];
+      c.tableOperations().create(tableName, new NewTableConfiguration()
+          .setProperties(Map.of(Property.TABLE_MAX_END_ROW_SIZE.getKey(), "10K")));
+
+      byte[] okSplit = new byte[4096];
+      for (int i = 0; i < okSplit.length; i++) {
+        okSplit[i] = (byte) (i % 256);
+      }
+
+      var splits1 = new TreeSet<Text>(List.of(new Text(okSplit)));
+
+      c.tableOperations().addSplits(tableName, splits1);
+
+      assertEquals(splits1, new TreeSet<>(c.tableOperations().listSplits(tableName)));
+
+      byte[] bigSplit = new byte[4096 * 4];
+      for (int i = 0; i < bigSplit.length; i++) {
+        bigSplit[i] = (byte) (i % 256);
+      }
+
+      var splits2 = new TreeSet<Text>(List.of(new Text(bigSplit)));
+      // split should fail because it exceeds the configured max split size
+      assertThrows(AccumuloException.class,
+          () -> c.tableOperations().addSplits(tableName, splits2));
+
+      // ensure the large split is not there
+      assertEquals(splits1, new TreeSet<>(c.tableOperations().listSplits(tableName)));
+    }
+  }
+
+  @Test
+  public void concurrentSplit() throws Exception {
+    try (AccumuloClient c = Accumulo.newClient().from(getClientProps()).build()) {
+
+      final String tableName = getUniqueNames(1)[0];
+
+      log.debug("Creating table {}", tableName);
+      c.tableOperations().create(tableName);
+
+      final int numRows = 100_000;
+      log.debug("Ingesting {} rows into {}", numRows, tableName);
+      VerifyParams params = new VerifyParams(getClientProps(), tableName, numRows);
+      TestIngest.ingest(c, params);
+
+      log.debug("Verifying {} rows ingested into {}", numRows, tableName);
+      VerifyIngest.verifyIngest(c, params);
+
+      log.debug("Creating futures that add random splits to the table");
+      ExecutorService es = Executors.newFixedThreadPool(10);
+      final int totalFutures = 100;
+      final int splitsPerFuture = 4;
+      final Set<Text> totalSplits = new HashSet<>();
+      List<Callable<Void>> tasks = new ArrayList<>(totalFutures);
+      for (int i = 0; i < totalFutures; i++) {
+        final Pair<Integer,Integer> splitBounds = getRandomSplitBounds(numRows);
+        final TreeSet<Text> splits = TestIngest.getSplitPoints(splitBounds.getFirst().longValue(),
+            splitBounds.getSecond().longValue(), splitsPerFuture);
+        totalSplits.addAll(splits);
+        tasks.add(() -> {
+          c.tableOperations().addSplits(tableName, splits);
+          return null;
+        });
+      }
+
+      log.debug("Submitting futures");
+      List<Future<Void>> futures =
+          tasks.parallelStream().map(es::submit).collect(Collectors.toList());
+
+      log.debug("Waiting for futures to complete");
+      for (Future<?> f : futures) {
+        f.get();
+      }
+      es.shutdown();
+
+      log.debug("Checking that {} splits were created ", totalSplits.size());
+
+      assertEquals(totalSplits, new HashSet<>(c.tableOperations().listSplits(tableName)),
+          "Did not see expected splits");
+
+      log.debug("Verifying {} rows ingested into {}", numRows, tableName);
+      VerifyIngest.verifyIngest(c, params);
+    }
+  }
+
+  /**
+   * Generates a pair of integers that represent the start and end of a range of splits. The start
+   * and end are randomly generated between 0 and upperBound. The start is guaranteed to be less
+   * than the end and the two bounds are guaranteed to be different values.
+   *
+   * @param upperBound the upper bound of the range of splits
+   * @return a pair of integers that represent the start and end of a range of splits
+   */
+  private Pair<Integer,Integer> getRandomSplitBounds(int upperBound) {
+    Preconditions.checkArgument(upperBound > 1, "upperBound must be greater than 1");
+
+    int start = RANDOM.get().nextInt(upperBound);
+    int end = RANDOM.get().nextInt(upperBound - 1);
+
+    // ensure start is less than end and that end is not equal to start
+    if (end >= start) {
+      end += 1;
+    } else {
+      int tmp = start;
+      start = end;
+      end = tmp;
+    }
+
+    return new Pair<>(start, end);
   }
 
   private String getDir() throws Exception {

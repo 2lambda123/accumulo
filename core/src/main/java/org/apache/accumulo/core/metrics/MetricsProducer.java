@@ -48,7 +48,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <td>N/A</td>
  * <td>N/A</td>
  * <td>{@value #METRICS_LOW_MEMORY}</td>
- * <td>Guage</td>
+ * <td>Gauge</td>
  * <td>reports 1 when process memory usage is above threshold, 0 when memory is okay</td>
  * </tr>
  * <tr>
@@ -56,6 +56,48 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <td>N/A</td>
  * <td>{@value #METRICS_COMPACTOR_MAJC_STUCK}</td>
  * <td>LongTaskTimer</td>
+ * <td></td>
+ * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_COMPACTOR_JOB_PRIORITY_QUEUES}</td>
+ * <td>Gauge</td>
+ * <td></td>
+ * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_LENGTH}</td>
+ * <td>Gauge</td>
+ * <td></td>
+ * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_JOBS_PRIORITY}</td>
+ * <td>Gauge</td>
+ * <td></td>
+ * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_JOBS_QUEUED}</td>
+ * <td>Gauge</td>
+ * <td></td>
+ * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_JOBS_DEQUEUED}</td>
+ * <td>Gauge</td>
+ * <td></td>
+ * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_JOBS_REJECTED}</td>
+ * <td>Gauge</td>
  * <td></td>
  * </tr>
  * <tr>
@@ -244,27 +286,6 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <td></td>
  * </tr>
  * <tr>
- * <td>activeMajCs</td>
- * <td>Gauge</td>
- * <td>{@value #METRICS_TSERVER_MAJC_RUNNING}</td>
- * <td>Gauge</td>
- * <td></td>
- * </tr>
- * <tr>
- * <td>N/A</td>
- * <td>N/A</td>
- * <td>{@value #METRICS_TSERVER_MAJC_STUCK}</td>
- * <td>LongTaskTimer</td>
- * <td></td>
- * </tr>
- * <tr>
- * <td>queuedMajCs</td>
- * <td>Gauge</td>
- * <td>{@value #METRICS_TSERVER_MAJC_QUEUED}</td>
- * <td>Gauge</td>
- * <td></td>
- * </tr>
- * <tr>
  * <td>activeMinCs</td>
  * <td>Gauge</td>
  * <td>{@value #METRICS_TSERVER_MINC_RUNNING}</td>
@@ -291,6 +312,21 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <td>{@value #METRICS_TSERVER_TABLETS_ONLINE}</td>
  * <td>Gauge</td>
  * <td></td>
+ * </tr>
+ * <tr>
+ * <td></td>
+ * <td></td>
+ * <td>{@link #METRICS_TSERVER_TABLETS_ONLINE_ONDEMAND}</td>
+ * <td>Gauge</td>
+ * <td>Represents the number of on-demand tablets that are online</td>
+ * </tr>
+ * <tr>
+ * <td></td>
+ * <td></td>
+ * <td>{@link #METRICS_TSERVER_TABLETS_ONDEMAND_UNLOADED_FOR_MEM}</td>
+ * <td>Gauge</td>
+ * <td>Represents the number of on-demand tablets that were unloaded due to low memory
+ * condition</td>
  * </tr>
  * <tr>
  * <td>N/A</td>
@@ -592,6 +628,27 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <td>Counter</td>
  * <td></td>
  * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_MANAGER_ROOT_TGW_ERRORS}</td>
+ * <td>Gauge</td>
+ * <td></td>
+ * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_MANAGER_META_TGW_ERRORS}</td>
+ * <td>Gauge</td>
+ * <td></td>
+ * </tr>
+ * <tr>
+ * <td>N/A</td>
+ * <td>N/A</td>
+ * <td>{@link #METRICS_MANAGER_USER_TGW_ERRORS}</td>
+ * <td>Gauge</td>
+ * <td></td>
+ * </tr>
  * </table>
  *
  * @since 2.1.0
@@ -603,6 +660,17 @@ public interface MetricsProducer {
   String METRICS_LOW_MEMORY = "accumulo.detected.low.memory";
   String METRICS_COMPACTOR_PREFIX = "accumulo.compactor.";
   String METRICS_COMPACTOR_MAJC_STUCK = METRICS_COMPACTOR_PREFIX + "majc.stuck";
+  String METRICS_COMPACTOR_JOB_PRIORITY_QUEUES = METRICS_COMPACTOR_PREFIX + "queue.count";
+  String METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_LENGTH = METRICS_COMPACTOR_PREFIX + "queue.length";
+  String METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_JOBS_DEQUEUED =
+      METRICS_COMPACTOR_PREFIX + "queue.jobs.dequeued";
+  String METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_JOBS_QUEUED =
+      METRICS_COMPACTOR_PREFIX + "queue.jobs.queued";
+  String METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_JOBS_REJECTED =
+      METRICS_COMPACTOR_PREFIX + "queue.jobs.rejected";
+
+  String METRICS_COMPACTOR_JOB_PRIORITY_QUEUE_JOBS_PRIORITY =
+      METRICS_COMPACTOR_PREFIX + "queue.jobs.priority";
 
   String METRICS_FATE_PREFIX = "accumulo.fate.";
   String METRICS_FATE_TYPE_IN_PROGRESS = METRICS_FATE_PREFIX + "ops.in.progress.by.type";
@@ -627,7 +695,12 @@ public interface MetricsProducer {
   String METRICS_GC_POST_OP_DURATION = METRICS_GC_PREFIX + "post.op.duration";
   String METRICS_GC_RUN_CYCLE = METRICS_GC_PREFIX + "run.cycle";
 
-  String METRICS_MAJC_PREFIX = "accumulo.tserver.compactions.majc.";
+  String METRICS_MANAGER_PREFIX = "accumulo.manager.";
+  String METRICS_MANAGER_ROOT_TGW_ERRORS = METRICS_MANAGER_PREFIX + "tabletmgmt.root.errors";
+  String METRICS_MANAGER_META_TGW_ERRORS = METRICS_MANAGER_PREFIX + "tabletmgmt.meta.errors";
+  String METRICS_MANAGER_USER_TGW_ERRORS = METRICS_MANAGER_PREFIX + "tabletmgmt.user.errors";
+
+  String METRICS_MAJC_PREFIX = "accumulo.compactions.majc.";
   String METRICS_MAJC_QUEUED = METRICS_MAJC_PREFIX + "queued";
   String METRICS_MAJC_RUNNING = METRICS_MAJC_PREFIX + "running";
   String METRICS_MAJC_PAUSED = METRICS_MAJC_PREFIX + "paused";
@@ -652,14 +725,15 @@ public interface MetricsProducer {
   String METRICS_TSERVER_PREFIX = "accumulo.tserver.";
   String METRICS_TSERVER_ENTRIES = METRICS_TSERVER_PREFIX + "entries";
   String METRICS_TSERVER_MEM_ENTRIES = METRICS_TSERVER_PREFIX + "entries.mem";
-  String METRICS_TSERVER_MAJC_QUEUED = METRICS_TSERVER_PREFIX + "majc.queued";
-  String METRICS_TSERVER_MAJC_RUNNING = METRICS_TSERVER_PREFIX + "majc.running";
-  String METRICS_TSERVER_MAJC_STUCK = METRICS_TSERVER_PREFIX + "majc.stuck";
   String METRICS_TSERVER_MINC_QUEUED = METRICS_TSERVER_PREFIX + "minc.queued";
   String METRICS_TSERVER_MINC_RUNNING = METRICS_TSERVER_PREFIX + "minc.running";
   String METRICS_TSERVER_MINC_TOTAL = METRICS_TSERVER_PREFIX + "minc.total";
   String METRICS_TSERVER_TABLETS_LONG_ASSIGNMENTS =
       METRICS_TSERVER_PREFIX + "tablets.assignments.warning";
+  String METRICS_TSERVER_TABLETS_ONLINE_ONDEMAND =
+      METRICS_TSERVER_PREFIX + "tablets.ondemand.online";
+  String METRICS_TSERVER_TABLETS_ONDEMAND_UNLOADED_FOR_MEM =
+      METRICS_TSERVER_PREFIX + "tablets.ondemand.unloaded.lowmem";
   String METRICS_TSERVER_TABLETS_ONLINE = METRICS_TSERVER_PREFIX + "tablets.online";
   String METRICS_TSERVER_TABLETS_OPENING = METRICS_TSERVER_PREFIX + "tablets.opening";
   String METRICS_TSERVER_TABLETS_UNOPENED = METRICS_TSERVER_PREFIX + "tablets.unopened";

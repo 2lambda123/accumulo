@@ -19,11 +19,9 @@
 package org.apache.accumulo.tserver.metrics;
 
 import org.apache.accumulo.core.metrics.MetricsProducer;
-import org.apache.accumulo.server.compaction.CompactionWatcher;
 import org.apache.accumulo.tserver.TabletServer;
 
 import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.LongTaskTimer;
 import io.micrometer.core.instrument.MeterRegistry;
 
 public class TabletServerMetrics implements MetricsProducer {
@@ -36,9 +34,7 @@ public class TabletServerMetrics implements MetricsProducer {
 
   @Override
   public void registerMetrics(MeterRegistry registry) {
-    LongTaskTimer timer = LongTaskTimer.builder(METRICS_TSERVER_MAJC_STUCK)
-        .description("Number and duration of stuck major compactions").register(registry);
-    CompactionWatcher.setTimer(timer);
+
     Gauge
         .builder(METRICS_TSERVER_TABLETS_LONG_ASSIGNMENTS, util,
             TabletServerMetricsUtil::getLongTabletAssignments)
@@ -48,18 +44,21 @@ public class TabletServerMetrics implements MetricsProducer {
         .description("Number of entries").register(registry);
     Gauge.builder(METRICS_TSERVER_MEM_ENTRIES, util, TabletServerMetricsUtil::getEntriesInMemory)
         .description("Number of entries in memory").register(registry);
-    Gauge.builder(METRICS_TSERVER_MAJC_RUNNING, util, TabletServerMetricsUtil::getMajorCompactions)
-        .description("Number of active major compactions").register(registry);
-    Gauge
-        .builder(METRICS_TSERVER_MAJC_QUEUED, util,
-            TabletServerMetricsUtil::getMajorCompactionsQueued)
-        .description("Number of queued major compactions").register(registry);
     Gauge.builder(METRICS_TSERVER_MINC_RUNNING, util, TabletServerMetricsUtil::getMinorCompactions)
         .description("Number of active minor compactions").register(registry);
     Gauge
         .builder(METRICS_TSERVER_MINC_QUEUED, util,
             TabletServerMetricsUtil::getMinorCompactionsQueued)
         .description("Number of queued minor compactions").register(registry);
+    Gauge
+        .builder(METRICS_TSERVER_TABLETS_ONLINE_ONDEMAND, util,
+            TabletServerMetricsUtil::getOnDemandOnlineCount)
+        .description("Number of online on-demand tablets").register(registry);
+    Gauge
+        .builder(METRICS_TSERVER_TABLETS_ONDEMAND_UNLOADED_FOR_MEM, util,
+            TabletServerMetricsUtil::getOnDemandUnloadedLowMem)
+        .description("Number of online on-demand tablets unloaded due to low memory")
+        .register(registry);
     Gauge.builder(METRICS_TSERVER_TABLETS_ONLINE, util, TabletServerMetricsUtil::getOnlineCount)
         .description("Number of online tablets").register(registry);
     Gauge.builder(METRICS_TSERVER_TABLETS_OPENING, util, TabletServerMetricsUtil::getOpeningCount)

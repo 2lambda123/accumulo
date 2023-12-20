@@ -76,6 +76,28 @@ public class MetadataSchema {
     }
 
     /**
+     * Check is a metadata row is of the expected format and throws an exception if its not.
+     */
+    public static void validateRow(Text metadataRow) {
+      int semiPos = -1;
+      int ltPos = -1;
+
+      for (int i = 0; i < metadataRow.getLength(); i++) {
+        if (metadataRow.getBytes()[i] == ';' && semiPos < 0) {
+          // want the position of the first semicolon
+          semiPos = i;
+        }
+        if (metadataRow.getBytes()[i] == '<') {
+          ltPos = i;
+        }
+      }
+
+      if (semiPos < 0 && ltPos < 0) {
+        throw new IllegalArgumentException("Metadata row does not contain ; or <  " + metadataRow);
+      }
+    }
+
+    /**
      * Decodes a metadata row into a pair of table ID and end row.
      */
     public static Pair<TableId,Text> decodeRow(Text metadataRow) {
@@ -219,17 +241,63 @@ public class MetadataSchema {
        */
       public static final String FLUSH_QUAL = "flush";
       public static final ColumnFQ FLUSH_COLUMN = new ColumnFQ(NAME, new Text(FLUSH_QUAL));
-      /**
-       * Holds compact IDs to enable waiting on a compaction to complete
-       */
-      public static final String COMPACT_QUAL = "compact";
-      public static final ColumnFQ COMPACT_COLUMN = new ColumnFQ(NAME, new Text(COMPACT_QUAL));
+
       /**
        * Holds lock IDs to enable a sanity check to ensure that the TServer writing to the metadata
        * tablet is not dead
        */
       public static final String LOCK_QUAL = "lock";
       public static final ColumnFQ LOCK_COLUMN = new ColumnFQ(NAME, new Text(LOCK_QUAL));
+
+      /**
+       * This column is used to indicate a destructive tablet operation is running that needs
+       * exclusive access to read and write to a tablet. The value uniquely identifies a FATE
+       * operation that is running and needs the exclusive access. The following goes over three
+       * cases for how all metadata updates should use this column.
+       *
+       * <p>
+       * Destructive table FATE operations like split, merge and delete will use this column in the
+       * following way.
+       * </p>
+       *
+       * <ol>
+       * <li>A fate operation sets the operation id on a tablet only if its not set by another
+       * operation</li>
+       * <li>Setting the operation id will cause the tablet to be unhosted. The fate operation waits
+       * for the tablet to have no location before making any updates.</li>
+       * <li>For each update made by the fate operation it will require the operation id to be set
+       * and the location to be absent</li>
+       * <li>The fate operation will delete the operation id when it finishes successfully</li>
+       * </ol>
+       *
+       * <p>
+       * Modifications for a hosted tablet will do the following.
+       * </p>
+       *
+       * <ul>
+       * <li>Ensure their location is set on the tablet when making updates w/o considering if an
+       * operation id is set or not. Because fate operation will wait for the location to be absent
+       * before making updates, the tablet can make whatever updates it needs before unloading.</li>
+       * <li>The future location should never be set on a tablet with no location that has an
+       * operation id set. This is because FATE operations assume once the location is unset that
+       * they have exclusive access.</li>
+       * </ul>
+       *
+       * <p>
+       * Routine modification to non hosted tablets (like bulk import, compaction, etc) should
+       * require the operation to be absent when making their updates.
+       * </p>
+       */
+      public static final String OPID_QUAL = "opid";
+      public static final ColumnFQ OPID_COLUMN = new ColumnFQ(NAME, new Text(OPID_QUAL));
+
+      /**
+       * This column is used to record what files a user compaction has selected for compaction.
+       * These files will be processed by one or more compaction jobs. The value for this column is
+       * managed by {@link SelectedFiles}
+       */
+      public static final String SELECTED_QUAL = "selected";
+      public static final ColumnFQ SELECTED_COLUMN = new ColumnFQ(NAME, new Text(SELECTED_QUAL));
     }
 
     /**
@@ -347,6 +415,24 @@ public class MetadataSchema {
       public static final ColumnFQ MERGED_COLUMN = new ColumnFQ(NAME, new Text(STR_NAME));
       public static final Value MERGED_VALUE = new Value("merged");
     }
+
+    /**
+     * This family is used to track which tablets were compacted by a user compaction. The column
+     * qualifier is expected to contain the fate transaction id that is executing the compaction.
+     */
+    public static class CompactedColumnFamily {
+      public static final String STR_NAME = "compacted";
+      public static final Text NAME = new Text(STR_NAME);
+    }
+
+    public static class HostingColumnFamily {
+      public static final String STR_NAME = "hosting";
+      public static final Text NAME = new Text(STR_NAME);
+      public static final String GOAL_QUAL = "goal";
+      public static final ColumnFQ GOAL_COLUMN = new ColumnFQ(NAME, new Text(GOAL_QUAL));
+      public static final String REQUESTED_QUAL = "requested";
+      public static final ColumnFQ REQUESTED_COLUMN = new ColumnFQ(NAME, new Text(REQUESTED_QUAL));
+    }
   }
 
   /**
@@ -431,9 +517,9 @@ public class MetadataSchema {
 
   }
 
-  public static class ExternalCompactionSection {
+  public static class ScanServerFileReferenceSection {
     private static final Section section =
-        new Section(RESERVED_PREFIX + "ecomp", true, RESERVED_PREFIX + "ecomq", false);
+        new Section(RESERVED_PREFIX + "sserv", true, RESERVED_PREFIX + "sserx", false);
 
     public static Range getRange() {
       return section.getRange();
@@ -444,9 +530,9 @@ public class MetadataSchema {
     }
   }
 
-  public static class ScanServerFileReferenceSection {
+  public static class RefreshSection {
     private static final Section section =
-        new Section(RESERVED_PREFIX + "sserv", true, RESERVED_PREFIX + "sserx", false);
+        new Section(RESERVED_PREFIX + "refresh", true, RESERVED_PREFIX + "refresi", false);
 
     public static Range getRange() {
       return section.getRange();

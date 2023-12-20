@@ -30,7 +30,6 @@ import java.util.Map;
 import org.apache.accumulo.core.cli.Help;
 import org.apache.accumulo.core.clientImpl.thrift.ClientService;
 import org.apache.accumulo.core.clientImpl.thrift.TInfo;
-import org.apache.accumulo.core.clientImpl.thrift.ThriftSecurityException;
 import org.apache.accumulo.core.conf.DefaultConfiguration;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.conf.SiteConfiguration;
@@ -54,35 +53,29 @@ import org.apache.accumulo.core.dataImpl.thrift.TSummaries;
 import org.apache.accumulo.core.dataImpl.thrift.TSummaryRequest;
 import org.apache.accumulo.core.dataImpl.thrift.UpdateErrors;
 import org.apache.accumulo.core.manager.thrift.TabletServerStatus;
-import org.apache.accumulo.core.metadata.MetadataTable;
 import org.apache.accumulo.core.metadata.TServerInstance;
-import org.apache.accumulo.core.metadata.TabletLocationState;
 import org.apache.accumulo.core.metadata.schema.Ample.DataLevel;
+import org.apache.accumulo.core.metadata.schema.TabletMetadata;
 import org.apache.accumulo.core.rpc.clients.ThriftClientTypes;
 import org.apache.accumulo.core.securityImpl.thrift.TCredentials;
 import org.apache.accumulo.core.tablet.thrift.TUnloadTabletGoal;
 import org.apache.accumulo.core.tablet.thrift.TabletManagementClientService;
-import org.apache.accumulo.core.tabletingest.thrift.DataFileInfo;
 import org.apache.accumulo.core.tabletingest.thrift.TDurability;
 import org.apache.accumulo.core.tabletingest.thrift.TabletIngestClientService;
 import org.apache.accumulo.core.tabletscan.thrift.ActiveScan;
 import org.apache.accumulo.core.tabletscan.thrift.TSamplerConfiguration;
 import org.apache.accumulo.core.tabletscan.thrift.TabletScanClientService;
 import org.apache.accumulo.core.tabletserver.thrift.ActiveCompaction;
-import org.apache.accumulo.core.tabletserver.thrift.TCompactionQueueSummary;
-import org.apache.accumulo.core.tabletserver.thrift.TExternalCompactionJob;
 import org.apache.accumulo.core.tabletserver.thrift.TabletServerClientService;
 import org.apache.accumulo.core.tabletserver.thrift.TabletStats;
 import org.apache.accumulo.core.util.threads.ThreadPools;
 import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.server.client.ClientServiceHandler;
 import org.apache.accumulo.server.manager.state.Assignment;
-import org.apache.accumulo.server.manager.state.MetaDataTableScanner;
 import org.apache.accumulo.server.manager.state.TabletStateStore;
 import org.apache.accumulo.server.rpc.TServerUtils;
 import org.apache.accumulo.server.rpc.ThriftProcessorTypes;
 import org.apache.accumulo.server.rpc.ThriftServerType;
-import org.apache.accumulo.server.zookeeper.TransactionWatcher;
 import org.apache.thrift.TException;
 import org.apache.thrift.TMultiplexedProcessor;
 
@@ -122,10 +115,6 @@ public class NullTserver {
     }
 
     @Override
-    public void loadFiles(TInfo tinfo, TCredentials credentials, long tid, String dir,
-        Map<TKeyExtent,Map<String,DataFileInfo>> fileMap, boolean setTime) {}
-
-    @Override
     public void closeMultiScan(TInfo tinfo, long scanID) {}
 
     @Override
@@ -139,12 +128,6 @@ public class NullTserver {
     @Override
     public ScanResult continueScan(TInfo tinfo, long scanID, long busyTimeout) {
       return null;
-    }
-
-    @Override
-    public void splitTablet(TInfo tinfo, TCredentials credentials, TKeyExtent extent,
-        ByteBuffer splitPoint) {
-
     }
 
     @Override
@@ -200,12 +183,6 @@ public class NullTserver {
 
     @Override
     public void flushTablet(TInfo tinfo, TCredentials credentials, String lock, TKeyExtent extent) {
-
-    }
-
-    @Override
-    public void compact(TInfo tinfo, TCredentials credentials, String lock, String tableId,
-        ByteBuffer startRow, ByteBuffer endRow) {
 
     }
 
@@ -271,27 +248,16 @@ public class NullTserver {
     }
 
     @Override
-    public List<TCompactionQueueSummary> getCompactionQueueInfo(TInfo tinfo,
-        TCredentials credentials) throws ThriftSecurityException, TException {
-      return null;
+    public List<TKeyExtent> refreshTablets(TInfo tinfo, TCredentials credentials,
+        List<TKeyExtent> refreshes) throws TException {
+      return List.of();
     }
 
     @Override
-    public TExternalCompactionJob reserveCompactionJob(TInfo tinfo, TCredentials credentials,
-        String queueName, long priority, String compactor, String externalCompactionId)
-        throws ThriftSecurityException, TException {
-      return null;
+    public Map<TKeyExtent,Long> allocateTimestamps(TInfo tinfo, TCredentials credentials,
+        List<TKeyExtent> tablets, int numStamps) throws TException {
+      return Map.of();
     }
-
-    @Override
-    public void compactionJobFinished(TInfo tinfo, TCredentials credentials,
-        String externalCompactionId, TKeyExtent extent, long fileSize, long entries)
-        throws ThriftSecurityException, TException {}
-
-    @Override
-    public void compactionJobFailed(TInfo tinfo, TCredentials credentials,
-        String externalCompactionId, TKeyExtent extent) throws TException {}
-
   }
 
   static class Opts extends Help {
@@ -315,7 +281,7 @@ public class NullTserver {
         (int) DefaultConfiguration.getInstance().getTimeInMillis(Property.INSTANCE_ZK_TIMEOUT);
     var siteConfig = SiteConfiguration.auto();
     ServerContext context = ServerContext.override(siteConfig, opts.iname, opts.keepers, zkTimeOut);
-    ClientServiceHandler csh = new ClientServiceHandler(context, new TransactionWatcher(context));
+    ClientServiceHandler csh = new ClientServiceHandler(context);
     NullTServerTabletClientHandler tch = new NullTServerTabletClientHandler();
 
     TMultiplexedProcessor muxProcessor = new TMultiplexedProcessor();
@@ -348,13 +314,14 @@ public class NullTserver {
     // read the locations for the table
     Range tableRange = new KeyExtent(tableId, null, null).toMetaRange();
     List<Assignment> assignments = new ArrayList<>();
-    try (var s = new MetaDataTableScanner(context, tableRange, MetadataTable.NAME)) {
+    try (var tablets = context.getAmple().readTablets().forLevel(DataLevel.USER).build()) {
       long randomSessionID = opts.port;
       TServerInstance instance = new TServerInstance(addr, randomSessionID);
+      var s = tablets.iterator();
 
       while (s.hasNext()) {
-        TabletLocationState next = s.next();
-        assignments.add(new Assignment(next.extent, instance, next.last));
+        TabletMetadata next = s.next();
+        assignments.add(new Assignment(next.getExtent(), instance, next.getLast()));
       }
     }
     // point them to this server

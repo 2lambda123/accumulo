@@ -37,7 +37,6 @@ import java.util.TreeMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.client.Accumulo;
@@ -45,6 +44,7 @@ import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
 import org.apache.accumulo.core.client.BatchDeleter;
+import org.apache.accumulo.core.client.InvalidTabletHostingRequestException;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.TableExistsException;
 import org.apache.accumulo.core.client.TableNotFoundException;
@@ -52,7 +52,7 @@ import org.apache.accumulo.core.client.admin.CompactionConfig;
 import org.apache.accumulo.core.client.rfile.RFile;
 import org.apache.accumulo.core.client.rfile.RFileWriter;
 import org.apache.accumulo.core.clientImpl.ClientContext;
-import org.apache.accumulo.core.clientImpl.TabletLocator;
+import org.apache.accumulo.core.clientImpl.ClientTabletCache;
 import org.apache.accumulo.core.conf.AccumuloConfiguration;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
@@ -70,13 +70,11 @@ import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.core.security.TablePermission;
 import org.apache.accumulo.core.tabletingest.thrift.DataFileInfo;
 import org.apache.accumulo.core.tabletingest.thrift.TabletIngestClientService;
-import org.apache.accumulo.core.trace.TraceUtil;
 import org.apache.accumulo.core.util.threads.ThreadPools;
 import org.apache.accumulo.harness.AccumuloClusterHarness;
 import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.server.fs.VolumeManager;
 import org.apache.accumulo.server.tablets.UniqueNameAllocator;
-import org.apache.accumulo.server.zookeeper.TransactionWatcher.ZooArbitrator;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -84,12 +82,14 @@ import org.apache.hadoop.io.Text;
 import org.apache.thrift.TServiceClient;
 import org.apache.thrift.transport.TTransportException;
 import org.apache.zookeeper.KeeperException;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.net.HostAndPort;
 
+@Disabled // ELASTICITY_TODO
 public class BulkFailureIT extends AccumuloClusterHarness {
 
   private static final Logger LOG = LoggerFactory.getLogger(BulkFailureIT.class);
@@ -225,7 +225,6 @@ public class BulkFailureIT extends AccumuloClusterHarness {
       KeyExtent extent = new KeyExtent(TableId.of(tableId), null, null);
 
       ServerContext asCtx = getServerContext();
-      ZooArbitrator.start(asCtx, Constants.BULK_ARBITRATOR_TYPE, fateTxid);
 
       VolumeManager vm = asCtx.getVolumeManager();
 
@@ -271,9 +270,6 @@ public class BulkFailureIT extends AccumuloClusterHarness {
       assertEquals(tabletFiles, getFiles(c, extent));
       assertEquals(Set.of(bulkLoadPath), getLoaded(c, extent));
       assertEquals(testData, readTable(table, c));
-
-      // After this, all load request should fail.
-      ZooArbitrator.stop(asCtx, Constants.BULK_ARBITRATOR_TYPE, fateTxid);
 
       c.securityOperations().grantTablePermission(c.whoami(), MetadataTable.NAME,
           TablePermission.WRITE);
@@ -364,17 +360,17 @@ public class BulkFailureIT extends AccumuloClusterHarness {
       Map<String,DataFileInfo> val = Map.of(path.getName(), new DataFileInfo(size));
       Map<KeyExtent,Map<String,DataFileInfo>> files = Map.of(extent, val);
 
-      client.loadFiles(TraceUtil.traceInfo(), context.rpcCreds(), txid, path.getParent().toString(),
-          files.entrySet().stream().collect(
-              Collectors.toMap(entry -> entry.getKey().toThrift(), Entry::getValue)),
-          false);
-
-      if (!expectFailure) {
-        while (!getLoaded(context, extent).contains(path)) {
-          Thread.sleep(100);
-        }
-      }
-
+      // ELASTICITY_TODO this used to call bulk import directly on tserver, need to look into the
+      // bigger picture of what this test was doing and how it can work w/ the new bulk import
+      throw new UnsupportedOperationException();
+      /*
+       * client.loadFiles(TraceUtil.traceInfo(), context.rpcCreds(), txid,
+       * path.getParent().toString(), files.entrySet().stream().collect( Collectors.toMap(entry ->
+       * entry.getKey().toThrift(), Entry::getValue)), false);
+       *
+       * if (!expectFailure) { while (!getLoaded(context, extent).contains(path)) {
+       * Thread.sleep(100); } }
+       */
     } finally {
       ThriftUtil.returnClient((TServiceClient) client, context);
     }
@@ -382,13 +378,14 @@ public class BulkFailureIT extends AccumuloClusterHarness {
 
   protected static TabletIngestClientService.Iface getClient(ClientContext context,
       KeyExtent extent) throws AccumuloException, AccumuloSecurityException, TableNotFoundException,
-      TTransportException {
-    TabletLocator locator = TabletLocator.getLocator(context, extent.tableId());
+      TTransportException, InvalidTabletHostingRequestException {
+    ClientTabletCache locator = ClientTabletCache.getInstance(context, extent.tableId());
 
     locator.invalidateCache(extent);
 
-    HostAndPort location = HostAndPort
-        .fromString(locator.locateTablet(context, new Text(""), false, true).getTserverLocation());
+    HostAndPort location = HostAndPort.fromString(locator
+        .findTabletWithRetry(context, new Text(""), false, ClientTabletCache.LocationNeed.REQUIRED)
+        .getTserverLocation().orElseThrow());
 
     long timeInMillis = context.getConfiguration().getTimeInMillis(Property.MANAGER_BULK_TIMEOUT);
     TabletIngestClientService.Iface client =

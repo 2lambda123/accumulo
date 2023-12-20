@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.client.TableNotFoundException;
 import org.apache.accumulo.core.client.admin.DelegationTokenConfig;
+import org.apache.accumulo.core.client.admin.TabletHostingGoal;
 import org.apache.accumulo.core.clientImpl.AuthenticationTokenIdentifier;
 import org.apache.accumulo.core.clientImpl.ClientContext;
 import org.apache.accumulo.core.clientImpl.DelegationTokenConfigSerializer;
@@ -62,11 +63,12 @@ import org.apache.accumulo.core.manager.thrift.ManagerGoalState;
 import org.apache.accumulo.core.manager.thrift.ManagerMonitorInfo;
 import org.apache.accumulo.core.manager.thrift.ManagerState;
 import org.apache.accumulo.core.manager.thrift.TabletLoadState;
-import org.apache.accumulo.core.manager.thrift.TabletSplit;
 import org.apache.accumulo.core.manager.thrift.ThriftPropertyException;
 import org.apache.accumulo.core.metadata.MetadataTable;
 import org.apache.accumulo.core.metadata.RootTable;
 import org.apache.accumulo.core.metadata.TServerInstance;
+import org.apache.accumulo.core.metadata.schema.Ample;
+import org.apache.accumulo.core.metadata.schema.Ample.ConditionalResult.Status;
 import org.apache.accumulo.core.metadata.schema.TabletDeletedException;
 import org.apache.accumulo.core.metadata.schema.TabletMetadata;
 import org.apache.accumulo.core.metadata.schema.TabletsMetadata;
@@ -74,6 +76,8 @@ import org.apache.accumulo.core.securityImpl.thrift.TCredentials;
 import org.apache.accumulo.core.securityImpl.thrift.TDelegationToken;
 import org.apache.accumulo.core.securityImpl.thrift.TDelegationTokenConfig;
 import org.apache.accumulo.core.util.ByteBufferUtil;
+import org.apache.accumulo.core.util.cache.Caches.CacheName;
+import org.apache.accumulo.manager.split.Splitter;
 import org.apache.accumulo.manager.tableOps.TraceRepo;
 import org.apache.accumulo.manager.tserverOps.ShutdownTServer;
 import org.apache.accumulo.server.client.ClientServiceHandler;
@@ -89,13 +93,24 @@ import org.apache.thrift.TException;
 import org.apache.zookeeper.KeeperException.NoNodeException;
 import org.slf4j.Logger;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Weigher;
+
 public class ManagerClientServiceHandler implements ManagerClientService.Iface {
 
   private static final Logger log = Manager.log;
   private final Manager manager;
 
+  private final Cache<KeyExtent,Long> recentHostingRequest;
+
+  private static final int TEN_MB = 10 * 1024 * 1024;
+
   protected ManagerClientServiceHandler(Manager manager) {
     this.manager = manager;
+    Weigher<KeyExtent,Long> weigher = (extent, t) -> Splitter.weigh(extent) + 8;
+    this.recentHostingRequest = this.manager.getContext().getCaches()
+        .createNewBuilder(CacheName.HOSTING_REQUEST_CACHE, true)
+        .expireAfterWrite(1, TimeUnit.MINUTES).maximumWeight(TEN_MB).weigher(weigher).build();
   }
 
   @Override
@@ -286,9 +301,9 @@ public class ManagerClientServiceHandler implements ManagerClientService.Iface {
     }
     if (stopTabletServers) {
       manager.setManagerGoalState(ManagerGoalState.CLEAN_STOP);
-      EventCoordinator.Listener eventListener = manager.nextEvent.getListener();
+      EventCoordinator.Tracker eventTracker = manager.nextEvent.getTracker();
       do {
-        eventListener.waitForEvents(Manager.ONE_SECOND);
+        eventTracker.waitForEvents(Manager.ONE_SECOND);
       } while (manager.tserverSet.size() > 0);
     }
     manager.setManagerState(ManagerState.STOP);
@@ -328,29 +343,6 @@ public class ManagerClientServiceHandler implements ManagerClientService.Iface {
   }
 
   @Override
-  public void reportSplitExtent(TInfo info, TCredentials credentials, String serverName,
-      TabletSplit split) throws ThriftSecurityException {
-    if (!manager.security.canPerformSystemActions(credentials)) {
-      throw new ThriftSecurityException(credentials.getPrincipal(),
-          SecurityErrorCode.PERMISSION_DENIED);
-    }
-
-    KeyExtent oldTablet = KeyExtent.fromThrift(split.oldTablet);
-    if (manager.migrations.remove(oldTablet) != null) {
-      Manager.log.info("Canceled migration of {}", split.oldTablet);
-    }
-    for (TServerInstance instance : manager.tserverSet.getCurrentServers()) {
-      if (serverName.equals(instance.getHostPort())) {
-        manager.nextEvent.event("%s reported split %s, %s", serverName,
-            KeyExtent.fromThrift(split.newTablets.get(0)),
-            KeyExtent.fromThrift(split.newTablets.get(1)));
-        return;
-      }
-    }
-    Manager.log.warn("Got a split from a server we don't recognize: {}", serverName);
-  }
-
-  @Override
   public void reportTabletStatus(TInfo info, TCredentials credentials, String serverName,
       TabletLoadState status, TKeyExtent ttablet) throws ThriftSecurityException {
     if (!manager.security.canPerformSystemActions(credentials)) {
@@ -365,10 +357,10 @@ public class ManagerClientServiceHandler implements ManagerClientService.Iface {
         Manager.log.error("{} reports assignment failed for tablet {}", serverName, tablet);
         break;
       case LOADED:
-        manager.nextEvent.event("tablet %s was loaded on %s", tablet, serverName);
+        manager.nextEvent.event(tablet, "tablet %s was loaded on %s", tablet, serverName);
         break;
       case UNLOADED:
-        manager.nextEvent.event("tablet %s was unloaded from %s", tablet, serverName);
+        manager.nextEvent.event(tablet, "tablet %s was unloaded from %s", tablet, serverName);
         break;
       case UNLOAD_ERROR:
         Manager.log.error("{} reports unload failed for tablet {}", serverName, tablet);
@@ -614,6 +606,52 @@ public class ManagerClientServiceHandler implements ManagerClientService.Iface {
     } catch (Exception e) {
       throw new TException(e.getMessage());
     }
+  }
+
+  @Override
+  public void requestTabletHosting(TInfo tinfo, TCredentials credentials, String tableIdStr,
+      List<TKeyExtent> extents) throws ThriftSecurityException, ThriftTableOperationException {
+
+    final TableId tableId = TableId.of(tableIdStr);
+    NamespaceId namespaceId = getNamespaceIdFromTableId(null, tableId);
+    if (!manager.security.canScan(credentials, tableId, namespaceId)) {
+      throw new ThriftSecurityException(credentials.getPrincipal(),
+          SecurityErrorCode.PERMISSION_DENIED);
+    }
+
+    manager.mustBeOnline(tableId);
+
+    final List<KeyExtent> success = new ArrayList<>();
+    final Ample ample = manager.getContext().getAmple();
+    try (var mutator = ample.conditionallyMutateTablets()) {
+      extents.forEach(e -> {
+        log.info("Tablet hosting requested for: {} ", KeyExtent.fromThrift(e));
+        KeyExtent ke = KeyExtent.fromThrift(e);
+        if (recentHostingRequest.getIfPresent(ke) == null) {
+          mutator.mutateTablet(ke).requireAbsentOperation()
+              .requireHostingGoal(TabletHostingGoal.ONDEMAND).requireAbsentLocation()
+              .setHostingRequested().submit(TabletMetadata::getHostingRequested);
+        } else {
+          log.trace("Ignoring hosting request because it was recently requested {}", ke);
+        }
+      });
+
+      mutator.process().forEach((extent, result) -> {
+        if (result.getStatus() == Status.ACCEPTED) {
+          // cache this success for a bit
+          success.add(extent);
+          recentHostingRequest.put(extent, System.currentTimeMillis());
+        } else {
+          if (log.isTraceEnabled()) {
+            // only read the metadata if the logging is enabled
+            log.trace("Failed to set hosting request {}", result.readMetadata());
+          }
+        }
+      });
+    }
+
+    manager.getEventCoordinator().event(success, "Tablet hosting requested for %d tablets in %s",
+        success.size(), tableId);
   }
 
   protected TableId getTableId(ClientContext context, String tableName)

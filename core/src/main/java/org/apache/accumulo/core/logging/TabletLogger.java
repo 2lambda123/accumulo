@@ -23,6 +23,7 @@ import static java.util.stream.Collectors.toList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.SortedSet;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.accumulo.core.client.admin.CompactionConfig;
@@ -36,6 +37,7 @@ import org.apache.accumulo.core.spi.compaction.CompactionJob;
 import org.apache.accumulo.core.spi.compaction.CompactionKind;
 import org.apache.accumulo.core.tabletserver.log.LogEntry;
 import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.io.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -91,9 +93,9 @@ public class TabletLogger {
     locLog.debug("Unassigned {} with {} walogs", extent, logCount);
   }
 
-  public static void split(KeyExtent parent, KeyExtent lowChild, KeyExtent highChild,
-      TServerInstance server) {
-    locLog.debug("Split {} into {} and {} on {}", parent, lowChild, highChild, server);
+  public static void split(KeyExtent parent, SortedSet<Text> splits) {
+    locLog.debug("Split {} into {} tablets", parent, splits.size() + 1);
+    locLog.trace("Split {} into {}", parent, splits);
   }
 
   /**
@@ -159,14 +161,14 @@ public class TabletLogger {
     fileLog.debug("Imported {} {}  ", extent, file);
   }
 
-  public static void recovering(KeyExtent extent, List<LogEntry> logEntries) {
+  public static void recovering(KeyExtent extent, Collection<LogEntry> logEntries) {
     if (recoveryLog.isDebugEnabled()) {
       List<String> logIds = logEntries.stream().map(LogEntry::getUniqueID).collect(toList());
       recoveryLog.debug("For {} recovering data from walogs: {}", extent, logIds);
     }
   }
 
-  public static void recovered(KeyExtent extent, List<LogEntry> logEntries, long numMutation,
+  public static void recovered(KeyExtent extent, Collection<LogEntry> logEntries, long numMutation,
       long numEntries) {
     recoveryLog.info("For {} recovered {} mutations creating {} entries from {} walogs", extent,
         numMutation, numEntries, logEntries.size());

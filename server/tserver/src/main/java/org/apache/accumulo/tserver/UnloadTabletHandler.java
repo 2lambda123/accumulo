@@ -20,12 +20,13 @@ package org.apache.accumulo.tserver;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
+import org.apache.accumulo.core.client.admin.TabletHostingGoal;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.manager.thrift.TabletLoadState;
 import org.apache.accumulo.core.metadata.TServerInstance;
-import org.apache.accumulo.core.metadata.TabletLocationState;
-import org.apache.accumulo.core.metadata.TabletLocationState.BadLocationStateException;
+import org.apache.accumulo.core.metadata.schema.TabletMetadata;
+import org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType;
 import org.apache.accumulo.core.metadata.schema.TabletMetadata.Location;
 import org.apache.accumulo.core.tablet.thrift.TUnloadTabletGoal;
 import org.apache.accumulo.server.manager.state.DistributedStoreException;
@@ -109,18 +110,17 @@ class UnloadTabletHandler implements Runnable {
 
     try {
       TServerInstance instance = server.getTabletSession();
-      TabletLocationState tls = null;
-      try {
-        tls = new TabletLocationState(extent, null, Location.current(instance), null, null, null);
-      } catch (BadLocationStateException e) {
-        log.error("Unexpected error", e);
-      }
+      // ELASTICITY_TODO: Modify Tablet to keep a reference to TableMetadata so that we
+      // can avoid building a tablet metadata that may not have needed information, for example may
+      // need the last location
+      TabletMetadata tm = TabletMetadata.builder(extent).putLocation(Location.current(instance))
+          .putHostingGoal(TabletHostingGoal.ONDEMAND).build(ColumnType.LAST, ColumnType.SUSPEND);
       if (!goalState.equals(TUnloadTabletGoal.SUSPENDED) || extent.isRootTablet()
           || (extent.isMeta()
               && !server.getConfiguration().getBoolean(Property.MANAGER_METADATA_SUSPENDABLE))) {
-        TabletStateStore.unassign(server.getContext(), tls, null);
+        TabletStateStore.unassign(server.getContext(), tm, null);
       } else {
-        TabletStateStore.suspend(server.getContext(), tls, null,
+        TabletStateStore.suspend(server.getContext(), tm, null,
             requestTimeSkew + NANOSECONDS.toMillis(System.nanoTime()));
       }
     } catch (DistributedStoreException ex) {

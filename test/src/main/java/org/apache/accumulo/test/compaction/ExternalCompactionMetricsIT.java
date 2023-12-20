@@ -18,8 +18,14 @@
  */
 package org.apache.accumulo.test.compaction;
 
-import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.QUEUE1;
-import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.QUEUE2;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP1;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP2;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP3;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP4;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP5;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP6;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP7;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP8;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.compact;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.createTable;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.verify;
@@ -32,8 +38,6 @@ import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.accumulo.compactor.Compactor;
-import org.apache.accumulo.coordinator.CompactionCoordinator;
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.conf.Property;
@@ -63,10 +67,19 @@ public class ExternalCompactionMetricsIT extends SharedMiniClusterBase {
     @Override
     public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration coreSite) {
       ExternalCompactionTestUtils.configureMiniCluster(cfg, coreSite);
-      cfg.setNumCompactors(2);
+      cfg.getClusterServerConfiguration().setNumDefaultCompactors(0);
       // use one tserver so that queue metrics are not spread across tservers
-      cfg.setNumTservers(1);
+      cfg.getClusterServerConfiguration().setNumDefaultTabletServers(1);
 
+      // Override the initial state from ExternalCompactionTestUtils to not create compactors
+      cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP1, 0);
+      cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP2, 0);
+      cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP3, 0);
+      cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP4, 0);
+      cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP5, 0);
+      cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP6, 0);
+      cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP7, 0);
+      cfg.getClusterServerConfiguration().addCompactorResourceGroup(GROUP8, 0);
       // Tell the server processes to use a StatsDMeterRegistry that will be configured
       // to push all metrics to the sink we started.
       cfg.setProperty(Property.GENERAL_MICROMETER_ENABLED, "true");
@@ -84,7 +97,6 @@ public class ExternalCompactionMetricsIT extends SharedMiniClusterBase {
   public static void before() throws Exception {
     sink = new TestStatsDSink();
     startMiniClusterWithConfig(new ExternalCompactionMetricsITConfig());
-    getCluster().getClusterControl().startCoordinator(CompactionCoordinator.class);
   }
 
   @AfterAll
@@ -123,7 +135,7 @@ public class ExternalCompactionMetricsIT extends SharedMiniClusterBase {
             if (shutdownTailer.get()) {
               break;
             }
-            if (s.startsWith(MetricsProducer.METRICS_MAJC_QUEUED)) {
+            if (s.startsWith(MetricsProducer.METRICS_COMPACTOR_PREFIX)) {
               queueMetrics.add(TestStatsDSink.parseStatsDMetric(s));
             }
           }
@@ -140,12 +152,13 @@ public class ExternalCompactionMetricsIT extends SharedMiniClusterBase {
       // wait until expected number of queued are seen in metrics
       while (!sawDCQ1_5 || !sawDCQ2_10) {
         Metric qm = queueMetrics.take();
-        sawDCQ1_5 |= match(qm, "DCQ1", "5");
-        sawDCQ2_10 |= match(qm, "DCQ2", "10");
+        sawDCQ1_5 |= match(qm, "dcq1", "5");
+        sawDCQ2_10 |= match(qm, "dcq2", "10");
       }
 
-      getCluster().getClusterControl().startCompactors(Compactor.class, 1, QUEUE1);
-      getCluster().getClusterControl().startCompactors(Compactor.class, 1, QUEUE2);
+      getCluster().getConfig().getClusterServerConfiguration().addCompactorResourceGroup(GROUP1, 1);
+      getCluster().getConfig().getClusterServerConfiguration().addCompactorResourceGroup(GROUP2, 1);
+      getCluster().getClusterControl().start(ServerType.COMPACTOR);
 
       boolean sawDCQ1_0 = false;
       boolean sawDCQ2_0 = false;
@@ -153,8 +166,8 @@ public class ExternalCompactionMetricsIT extends SharedMiniClusterBase {
       // wait until queued goes to zero in metrics
       while (!sawDCQ1_0 || !sawDCQ2_0) {
         Metric qm = queueMetrics.take();
-        sawDCQ1_0 |= match(qm, "DCQ1", "0");
-        sawDCQ2_0 |= match(qm, "DCQ2", "0");
+        sawDCQ1_0 |= match(qm, "dcq1", "0");
+        sawDCQ2_0 |= match(qm, "dcq2", "0");
       }
 
       shutdownTailer.set(true);
@@ -163,7 +176,9 @@ public class ExternalCompactionMetricsIT extends SharedMiniClusterBase {
       // Wait for all external compactions to complete
       long count;
       do {
-        UtilWaitThread.sleep(100);
+        // TODO: Change this from waiting to verifying that all compactors are done running jobs,
+        // not just check that the jobs have been polled off the queues.
+        UtilWaitThread.sleep(10000);
         try (TabletsMetadata tm = getCluster().getServerContext().getAmple().readTablets()
             .forLevel(DataLevel.USER).fetch(ColumnType.ECOMP).build()) {
           count = tm.stream().mapToLong(t -> t.getExternalCompactions().keySet().size()).sum();
@@ -178,7 +193,7 @@ public class ExternalCompactionMetricsIT extends SharedMiniClusterBase {
 
   private static boolean match(Metric input, String queue, String value) {
     if (input.getTags() != null) {
-      String id = input.getTags().get("id");
+      String id = input.getTags().get("queue.id");
       if (id != null && id.equals("e." + queue) && input.getValue().equals(value)) {
         return true;
       }

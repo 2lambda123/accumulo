@@ -21,12 +21,13 @@ package org.apache.accumulo.core.util.compaction;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+import org.apache.accumulo.core.client.PluginEnvironment;
 import org.apache.accumulo.core.conf.AccumuloConfiguration;
 import org.apache.accumulo.core.conf.ConfigurationTypeHelper;
 import org.apache.accumulo.core.conf.Property;
-import org.apache.accumulo.core.spi.compaction.CompactionServiceId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,26 +46,22 @@ public class CompactionServicesConfig {
   private final Map<String,String> plannerPrefixes = new HashMap<>();
   private final Map<String,Long> rateLimits = new HashMap<>();
   private final Map<String,Map<String,String>> options = new HashMap<>();
-  @SuppressWarnings("deprecation")
-  private final Property oldPrefix = Property.TSERV_COMPACTION_SERVICE_PREFIX;
-  private final Property newPrefix = Property.COMPACTION_SERVICE_PREFIX;
-  long defaultRateLimit;
-
-  public static final CompactionServiceId DEFAULT_SERVICE = CompactionServiceId.of("default");
 
   @SuppressWarnings("deprecation")
-  private long getDefaultThroughput() {
-    return ConfigurationTypeHelper
-        .getMemoryAsBytes(Property.TSERV_COMPACTION_SERVICE_DEFAULT_RATE_LIMIT.getDefaultValue());
+  private static final Property oldPrefix = Property.TSERV_COMPACTION_SERVICE_PREFIX;
+  private static final Property newPrefix = Property.COMPACTION_SERVICE_PREFIX;
+
+  private interface ConfigIndirection {
+    Map<String,String> getAllPropertiesWithPrefixStripped(Property p);
   }
 
-  private Map<String,Map<String,String>> getConfiguration(AccumuloConfiguration aconf) {
+  private static Map<String,Map<String,String>> getConfiguration(ConfigIndirection aconf) {
     Map<String,Map<String,String>> properties = new HashMap<>();
 
     var newProps = aconf.getAllPropertiesWithPrefixStripped(newPrefix);
     properties.put(newPrefix.getKey(), newProps);
 
-    // get all of the services under the new prefix
+    // get all the services under the new prefix
     var newServices =
         newProps.keySet().stream().map(prop -> prop.split("\\.")[0]).collect(Collectors.toSet());
 
@@ -86,10 +83,23 @@ public class CompactionServicesConfig {
     return Map.copyOf(properties);
   }
 
-  public CompactionServicesConfig(AccumuloConfiguration aconf) {
-    Map<String,Map<String,String>> configs = getConfiguration(aconf);
+  public CompactionServicesConfig(PluginEnvironment.Configuration conf) {
+    // TODO will probably not need rate limit eventually and the 2nd param predicate can go away
+    this(getConfiguration(prefix -> {
+      var props = conf.getWithPrefix(prefix.getKey());
+      Map<String,String> stripped = new HashMap<>();
+      props.forEach((k, v) -> stripped.put(k.substring(prefix.getKey().length()), v));
+      return stripped;
+    }), property -> conf.isSet(property.getKey()));
+  }
 
-    // Find compaction planner defs first.
+  public CompactionServicesConfig(AccumuloConfiguration aconf) {
+    this(getConfiguration(aconf::getAllPropertiesWithPrefixStripped), aconf::isPropertySet);
+  }
+
+  @SuppressWarnings("removal")
+  private CompactionServicesConfig(Map<String,Map<String,String>> configs,
+      Predicate<Property> isSetPredicate) {
     configs.forEach((prefix, props) -> {
       props.forEach((prop, val) -> {
         String[] tokens = prop.split("\\.");
@@ -104,7 +114,7 @@ public class CompactionServicesConfig {
             }
             boolean isPropSet = true;
             if (userDefined != null) {
-              isPropSet = aconf.isPropertySet(userDefined);
+              isPropSet = isSetPredicate.test(userDefined);
             }
             if (isPropSet) {
               log.warn(
@@ -130,7 +140,7 @@ public class CompactionServicesConfig {
           options.computeIfAbsent(tokens[0], k -> new HashMap<>()).put(tokens[3], val);
         } else if (tokens.length == 3 && tokens[1].equals("rate") && tokens[2].equals("limit")) {
           var eprop = Property.getPropertyByKey(prop);
-          if (eprop == null || aconf.isPropertySet(eprop)) {
+          if (eprop == null || isSetPredicate.test(eprop)) {
             rateLimits.put(tokens[0], ConfigurationTypeHelper.getFixedMemoryAsBytes(val));
           }
         } else if (tokens.length == 2 && tokens[1].equals("planner")) {
@@ -141,19 +151,12 @@ public class CompactionServicesConfig {
         }
       });
     });
-    defaultRateLimit = getDefaultThroughput();
-
     var diff = Sets.difference(options.keySet(), planners.keySet());
 
     if (!diff.isEmpty()) {
       throw new IllegalArgumentException(
           "Incomplete compaction service definitions, missing planner class " + diff);
     }
-
-  }
-
-  public long getRateLimit(String serviceName) {
-    return getRateLimits().getOrDefault(serviceName, defaultRateLimit);
   }
 
   @Override

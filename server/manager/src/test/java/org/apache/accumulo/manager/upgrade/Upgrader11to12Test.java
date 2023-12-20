@@ -401,7 +401,7 @@ public class Upgrader11to12Test {
     ArrayList<Mutation> mutations = new ArrayList<>();
     Upgrader11to12 upgrader = new Upgrader11to12();
     upgrader.processReferences(mutations::add,
-        rtm.toKeyValues().filter(e -> UPGRADE_FAMILIES.contains(e.getKey().getColumnFamily()))
+        rtm.getKeyValues().filter(e -> UPGRADE_FAMILIES.contains(e.getKey().getColumnFamily()))
             .collect(Collectors.toList()),
         "accumulo.metadata");
     assertEquals(1, mutations.size());
@@ -427,7 +427,7 @@ public class Upgrader11to12Test {
     ArrayList<Mutation> mutations = new ArrayList<>();
     Upgrader11to12 upgrader = new Upgrader11to12();
     upgrader.processReferences(mutations::add,
-        rtm.toKeyValues().filter(e -> UPGRADE_FAMILIES.contains(e.getKey().getColumnFamily()))
+        rtm.getKeyValues().filter(e -> UPGRADE_FAMILIES.contains(e.getKey().getColumnFamily()))
             .collect(Collectors.toList()),
         "accumulo.metadata");
     assertEquals(1, mutations.size());
