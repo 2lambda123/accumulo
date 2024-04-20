@@ -152,7 +152,7 @@
     <version.hadoop>3.3.6</version.hadoop>
     <version.opentelemetry>1.27.0</version.opentelemetry>
     <version.slf4j>2.0.12</version.slf4j>
-    <version.thrift>0.17.0</version.thrift>
+    <version.thrift>0.20.0</version.thrift>
     <version.zookeeper>3.9.2</version.zookeeper>
   </properties>
   <dependencyManagement>
