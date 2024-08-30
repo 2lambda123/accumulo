@@ -151,7 +151,7 @@
     <version.errorprone>2.23.0</version.errorprone>
     <version.hadoop>3.4.0</version.hadoop>
     <version.opentelemetry>1.27.0</version.opentelemetry>
-    <version.slf4j>2.0.14</version.slf4j>
+    <version.slf4j>2.0.15</version.slf4j>
     <version.thrift>0.20.0</version.thrift>
     <version.zookeeper>3.9.2</version.zookeeper>
   </properties>
