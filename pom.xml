@@ -149,7 +149,7 @@
     <version.bouncycastle>1.78</version.bouncycastle>
     <version.curator>5.5.0</version.curator>
     <version.errorprone>2.23.0</version.errorprone>
-    <version.hadoop>3.4.0</version.hadoop>
+    <version.hadoop>3.4.1</version.hadoop>
     <version.opentelemetry>1.27.0</version.opentelemetry>
     <version.slf4j>2.0.16</version.slf4j>
     <version.thrift>0.21.0</version.thrift>
