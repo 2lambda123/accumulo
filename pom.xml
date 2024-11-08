@@ -153,7 +153,7 @@
     <version.opentelemetry>1.27.0</version.opentelemetry>
     <version.slf4j>2.0.16</version.slf4j>
     <version.thrift>0.21.0</version.thrift>
-    <version.zookeeper>3.9.2</version.zookeeper>
+    <version.zookeeper>3.9.3</version.zookeeper>
   </properties>
   <dependencyManagement>
     <dependencies>
